@@ -1,49 +1,49 @@
 # Ezra — Backend
 
-Backend for **Ezra**, a geo-based MMO (real-world map, GPS-driven base building,
-territory infection, PvP/PvE). This repo is the Go server only — the game
-client lives in a separate repo.
+Бэкенд **Ezra** — гео-MMO (карта реального мира, GPS-строительство базы,
+заражение территории, PvP/PvE). Этот репозиторий — только Go-сервер, клиент
+игры живёт в отдельном репозитории.
 
-## Stack
+## Стек
 
-| Layer | Tech |
+| Слой | Технология |
 |---|---|
-| Language | Go 1.25 |
-| HTTP router | [chi](https://github.com/go-chi/chi) |
-| Database | PostgreSQL + PostGIS |
-| Cache / sessions / job queue | Redis |
-| Background jobs | [asynq](https://github.com/hibiken/asynq) (in-process worker + scheduler) |
-| Auth | Firebase ID tokens **or** login/password (bcrypt) |
-| Push notifications | Firebase Cloud Messaging |
-| Realtime | Server-Sent Events (`GET /events`) |
-| Migrations | [golang-migrate](https://github.com/golang-migrate/migrate) |
+| Язык | Go 1.25 |
+| HTTP-роутер | [chi](https://github.com/go-chi/chi) |
+| База данных | PostgreSQL + PostGIS |
+| Кэш / сессии / очередь задач | Redis |
+| Фоновые задачи | [asynq](https://github.com/hibiken/asynq) (worker + scheduler в том же процессе) |
+| Авторизация | Firebase ID token **или** login/password (bcrypt) |
+| Push-уведомления | Firebase Cloud Messaging |
+| Реалтайм | Server-Sent Events (`GET /events`) |
+| Миграции | [golang-migrate](https://github.com/golang-migrate/migrate) |
 
-One binary (`cmd/ezra`) serves HTTP, runs the asynq worker, and runs the
-asynq scheduler — all as goroutines in the same process. There is no
-separate worker binary.
+Один бинарник (`cmd/ezra`) обслуживает HTTP, запускает asynq worker и asynq
+scheduler — всё как горутины в одном процессе. Отдельного бинарника для
+воркера нет.
 
-## Quickstart (local dev)
+## Быстрый старт (локальная разработка)
 
-Requires Docker and Go 1.25+.
+Нужны Docker и Go 1.25+.
 
 ```bash
-# 1. Start Postgres + Redis + the app in containers
-cp .env.example .env   # only needed if you run the app outside Docker
+# 1. Поднять Postgres + Redis + приложение в контейнерах
+cp .env.example .env   # нужно, только если запускаешь приложение вне Docker
 docker compose up -d
 
-# 2. Run migrations (from your host, against the containerized Postgres)
+# 2. Прогнать миграции (с хоста, на контейнерный Postgres)
 export DATABASE_URL="postgres://ezra:ezra@localhost:5432/ezra?sslmode=disable"
 make migrate-up
 
-# 3. Check it's alive
+# 3. Проверить, что всё живо
 curl http://localhost:8081/health
 ```
 
-`docker-compose.yml` maps the app to host port `8081` and loosens the
-anti-cheat / infection timers for fast local iteration (see
+`docker-compose.yml` пробрасывает приложение на порт хоста `8081` и ослабляет
+таймеры античита/заражения для быстрой локальной итерации (см.
 [docs/SETUP.md](docs/SETUP.md)).
 
-To run the Go server directly on your host instead of in Docker:
+Чтобы запустить Go-сервер прямо на хосте, а не в Docker:
 
 ```bash
 export DATABASE_URL="postgres://ezra:ezra@localhost:5432/ezra?sslmode=disable"
@@ -51,45 +51,45 @@ export REDIS_URL="redis://localhost:6379"
 make run   # go run ./cmd/ezra
 ```
 
-No Firebase credentials are required to get a working local server — see
-[docs/SETUP.md](docs/SETUP.md) for the login/password auth path, and only set
-up Firebase if you specifically need to test that flow.
+Firebase-креды для рабочего локального сервера не нужны — см.
+[docs/SETUP.md](docs/SETUP.md) про вход по login/password; Firebase настраивай,
+только если тебе конкретно нужно протестировать этот флоу.
 
-## Project layout
+## Структура проекта
 
 ```
-cmd/ezra/       entrypoint: wires every package and starts HTTP + workers
-cmd/bot/        headless bot swarm for manual multiplayer testing (not shipped)
-internal/       one package per game domain (handler → service → repository)
-internal/canon/ central game-rule constants shared across packages
-internal/platform/  infra wiring: Postgres, Redis, Firebase, asynq, Overpass
-pkg/            small shared libraries (HTTP helpers, middleware, geo math)
-migrations/     golang-migrate SQL migrations, one numbered pair per change
-config/         balance.yaml — tunable game-balance numbers
+cmd/ezra/       точка входа: собирает все пакеты и запускает HTTP + воркеры
+cmd/bot/        headless-рой ботов для ручного теста мультиплеера (не в проде)
+internal/       по одному пакету на игровой домен (handler → service → repository)
+internal/canon/ центральные игровые константы, общие для всех пакетов
+internal/platform/  инфраструктура: Postgres, Redis, Firebase, asynq, Overpass
+pkg/            небольшие общие библиотеки (HTTP-хелперы, middleware, гео-математика)
+migrations/     SQL-миграции golang-migrate, одна нумерованная пара на изменение
+config/         balance.yaml — настраиваемые числа игрового баланса
 ```
 
-## Documentation
+## Документация
 
-Start here if you're new to the project:
+Если ты новый человек в проекте — начни отсюда:
 
-1. [docs/DOMAIN_GLOSSARY.md](docs/DOMAIN_GLOSSARY.md) — what a Rift, Tower,
-   Faction, Symbiont etc. actually are, in engineering terms.
-2. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the code is laid out,
-   how a request flows through it, background jobs, realtime.
-3. [docs/API.md](docs/API.md) — the full REST surface.
-4. [docs/SETUP.md](docs/SETUP.md) — local dev environment in detail.
-5. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — how this ships to production.
+1. [docs/DOMAIN_GLOSSARY.md](docs/DOMAIN_GLOSSARY.md) — что такое Rift,
+   Tower, Faction, Symbiont и остальное, простым инженерным языком.
+2. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — как устроен код, как
+   запрос проходит через систему, фоновые задачи, реалтайм.
+3. [docs/API.md](docs/API.md) — весь REST-эндпоинты.
+4. [docs/SETUP.md](docs/SETUP.md) — локальное окружение разработки подробно.
+5. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — как это выкатывается в прод.
 
-`docs/legacy/` holds older planning-era docs kept for historical context —
-they predate large parts of the current implementation, so treat the docs
-above as the source of truth when they disagree.
+`docs/legacy/` — более старые доки из ранней стадии планирования, оставлены
+для истории — они описывают систему до того, как была реализована большая
+часть текущего функционала, так что при расхождениях верь докам выше, а не им.
 
-## Testing
+## Тесты
 
 ```bash
 make test   # go test ./...
 ```
 
-Business logic is unit-tested with hand-written fakes for repository/
-collaborator interfaces (no mocking framework, no test containers). See
-`internal/*/service_test.go` for examples.
+Бизнес-логика покрыта unit-тестами с самописными фейками для
+repository/collaborator-интерфейсов (без mock-фреймворков и тестовых
+контейнеров). Примеры — в `internal/*/service_test.go`.

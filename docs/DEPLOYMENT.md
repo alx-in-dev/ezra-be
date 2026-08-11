@@ -1,68 +1,69 @@
-# Deployment
+# Деплой
 
-## Image
+## Образ
 
-`Dockerfile` is a two-stage build:
+`Dockerfile` — двухстадийная сборка:
 
-1. `golang:1.25-alpine` compiles a static binary:
+1. `golang:1.25-alpine` компилирует статический бинарник:
    `CGO_ENABLED=0 GOOS=linux go build -o /ezra ./cmd/ezra`.
-2. `alpine:3.19` runtime image carries just the binary plus `migrations/`
-   and `config/`, exposes port `8080`, entrypoint `ezra`.
+2. `alpine:3.19` — рантайм-образ, несёт только бинарник плюс `migrations/`
+   и `config/`, открывает порт `8080`, entrypoint `ezra`.
 
-Migrations are **not** applied automatically on container start — they ship
-with the image so you can run them explicitly (see below), but nothing
-inside the container calls `migrate` for you.
+Миграции **не** применяются автоматически при старте контейнера — они
+поставляются вместе с образом, чтобы их можно было запустить явно (см.
+ниже), но внутри контейнера ничего не вызывает `migrate` за тебя.
 
-## Production topology
+## Топология в продакшене
 
-Same `docker-compose.yml` used for local dev is used in production: `app` +
-`postgres` (PostGIS) + `redis`, `app` published on host port `8081`. Swap the
-dev-only env overrides (`MAX_SPEED_KMH`, `DOME_SUPPRESSION_PER_HOUR`) back to
-production values before/while deploying — they currently live directly in
-`docker-compose.yml`, so check that file rather than assuming this doc is
-current.
+В продакшене используется тот же `docker-compose.yml`, что и для локальной
+разработки: `app` + `postgres` (PostGIS) + `redis`, `app` опубликован на
+порту хоста `8081`. Перед деплоем (или во время него) верни dev-only
+override'ы (`MAX_SPEED_KMH`, `DOME_SUPPRESSION_PER_HOUR`) к продакшн-значениям
+— сейчас они прописаны прямо в `docker-compose.yml`, так что смотри
+актуальное содержимое файла, а не считай, что этот док точен.
 
-## Current production host
+## Текущий продакшн-хост
 
-`deploy_remote.sh` syncs this repo to a single VPS and restarts it there:
+`deploy_remote.sh` синхронизирует этот репозиторий на один VPS и
+перезапускает его там:
 
 ```bash
-./deploy_remote.sh           # rsync code, restart the app container (no rebuild)
-./deploy_remote.sh --build   # rsync code, docker compose up -d --build
+./deploy_remote.sh           # rsync кода, рестарт контейнера app (без пересборки)
+./deploy_remote.sh --build   # rsync кода, docker compose up -d --build
 ```
 
-- Target: `cactus@94.228.120.50:5378` (custom SSH port) → `/data/ezra`
-- Excludes build artifacts and `.git` from the sync
-  (`.tmp/`, `/ezra`, `/seed`, `/bin/`, backups)
-- Ends with a health check: `curl http://94.228.120.50:8081/health`
+- Цель: `cactus@94.228.120.50:5378` (нестандартный SSH-порт) → `/data/ezra`
+- Из синхронизации исключены build-артефакты и `.git`
+  (`.tmp/`, `/ezra`, `/seed`, `/bin/`, бэкапы)
+- В конце — health check: `curl http://94.228.120.50:8081/health`
 
-You need SSH access to that host to deploy. This is a single-host setup —
-there's no orchestration layer (no k8s, no load balancer) as of this
-writing.
+Для деплоя нужен SSH-доступ на этот хост. Сейчас это single-host setup —
+без оркестрации (ни k8s, ни балансировщика) на момент написания.
 
-## Manual deploy checklist
+## Чеклист ручного деплоя
 
-1. `./deploy_remote.sh --build` from your machine (or CI, if that's set up
-   later — nothing automated exists yet).
-2. If the change includes a new migration, SSH in and run it against the
-   production database before/after the app restarts, depending on whether
-   it's backward-compatible with the currently-running binary:
+1. `./deploy_remote.sh --build` со своей машины (или из CI, если он когда-нибудь
+   появится — пока автоматики нет).
+2. Если изменение включает новую миграцию — зайди по SSH и прогони её на
+   продакшн-БД до или после рестарта приложения, в зависимости от того,
+   обратно совместима ли она с уже запущенным бинарником:
    ```bash
    ssh -p 5378 cactus@94.228.120.50
    cd /data/ezra
    DATABASE_URL="<prod dsn>" migrate -path migrations -database "$DATABASE_URL" up
    ```
-3. Confirm `curl http://94.228.120.50:8081/health` returns `{"status":"ok"}`
-   (the script does this automatically, but re-check after a migration).
+3. Убедись, что `curl http://94.228.120.50:8081/health` возвращает
+   `{"status":"ok"}` (скрипт делает это автоматически, но перепроверь
+   после миграции).
 
-## Secrets on the server
+## Секреты на сервере
 
-`firebase-credentials.json` must exist on the production host at the repo
-root (mounted read-only into `app` per `docker-compose.yml`). It's gitignored
-— never committed — but `deploy_remote.sh` does **not** exclude it from the
-rsync, so whatever copy sits in your local `server/` directory when you run
-the script overwrites the one on the host. Keep the production credentials
-file only on machines/hosts that should hold it, and double-check you're not
-about to sync a dev/empty version over a working production one. If it's
-missing or invalid, Firebase login fails but login/password auth keeps
-working.
+`firebase-credentials.json` должен существовать на продакшн-хосте в корне
+репозитория (монтируется read-only в `app` согласно `docker-compose.yml`).
+Он в gitignore — никогда не коммитится — но `deploy_remote.sh` **не**
+исключает его из rsync, так что при запуске скрипта та копия, что лежит в
+твоей локальной директории `server/`, перезапишет ту, что на хосте. Держи
+продакшн-файл с кредами только на машинах/хостах, которым он реально
+нужен, и перепроверяй, что не собираешься синхронизировать dev/пустую
+версию поверх рабочей продакшн. Если файла нет или он невалиден —
+Firebase-логин не работает, но логин/пароль продолжает работать.

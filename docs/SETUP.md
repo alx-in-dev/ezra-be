@@ -1,85 +1,85 @@
-# Local Development Setup
+# Настройка локальной разработки
 
-## Prerequisites
+## Что нужно заранее
 
 - Go 1.25+
-- Docker + Docker Compose (for Postgres/Redis, or the whole stack)
-- `golang-migrate` CLI if you want to run migrations from your host
-  (`brew install golang-migrate` or see the
-  [migrate docs](https://github.com/golang-migrate/migrate)) — not needed if
-  you only ever run the app in Docker, since migrations aren't applied
-  automatically by the container either way; you still run `make migrate-up`
-  against the exposed Postgres port.
+- Docker + Docker Compose (для Postgres/Redis или всего стека целиком)
+- CLI `golang-migrate`, если хочешь запускать миграции с хоста
+  (`brew install golang-migrate` или см.
+  [документацию migrate](https://github.com/golang-migrate/migrate)) — не
+  нужен, если запускаешь приложение только в Docker: контейнер всё равно не
+  применяет миграции автоматически, `make migrate-up` в любом случае
+  запускается против пробрасываемого порта Postgres.
 
-## Option A — everything in Docker
+## Вариант А — всё в Docker
 
 ```bash
 docker compose up -d
 ```
 
-This starts three containers:
+Поднимает три контейнера:
 
-- `app` — builds from the local `Dockerfile`, exposed on host port `8081`
-  (container listens on `8080`).
-- `postgres` — `postgis/postgis:16-3.4`, exposed on `5432`.
-- `redis` — `redis:7-alpine`, exposed on `6379`.
+- `app` — собирается из локального `Dockerfile`, проброшен на порт хоста
+  `8081` (контейнер слушает `8080`).
+- `postgres` — `postgis/postgis:16-3.4`, проброшен на `5432`.
+- `redis` — `redis:7-alpine`, проброшен на `6379`.
 
-`app` waits for both dependencies to pass their healthchecks before starting.
-It also sets two dev-friendly overrides you should know about:
+`app` ждёт, пока обе зависимости пройдут healthcheck, прежде чем стартовать.
+Также он задаёт два dev-friendly override'а, о которых стоит знать:
 
-- `MAX_SPEED_KMH=100000` — the anti-cheat speed cap is effectively disabled,
-  so GPS-simulator tools ("FakeGPS") can teleport your test position without
-  tripping `impossible_speed`.
-- `DOME_SUPPRESSION_PER_HOUR=600` — domes clear infection in minutes instead
-  of the production ~30%/hour, so you don't wait around to see suppression
-  work.
+- `MAX_SPEED_KMH=100000` — античит по скорости фактически отключён, так
+  что GPS-симуляторы ("FakeGPS") могут телепортировать тестовую позицию, не
+  словив `impossible_speed`.
+- `DOME_SUPPRESSION_PER_HOUR=600` — купола очищают заражение за минуты
+  вместо продакшн ~30%/час, чтобы не ждать, пока подавление сработает.
 
-Then run migrations against the exposed Postgres port:
+Затем прогони миграции на проброшенный порт Postgres:
 
 ```bash
 export DATABASE_URL="postgres://ezra:ezra@localhost:5432/ezra?sslmode=disable"
 make migrate-up
 ```
 
-`docker-compose.yml` also mounts `./firebase-credentials.json` read-only into
-the container — you don't need to provide this file unless you're testing the
-Firebase login path (see [Auth](#auth) below); without it, the server logs
-"firebase auth is not configured" and the login/password path still works
-fine.
+`docker-compose.yml` также монтирует `./firebase-credentials.json` внутрь
+контейнера в режиме read-only — этот файл не нужен, если ты не тестируешь
+именно Firebase-логин (см. [Авторизацию](#авторизация) ниже); без него
+сервер логирует "firebase auth is not configured", а вход по
+login/password при этом продолжает нормально работать.
 
-## Option B — Go on your host, infra in Docker
+## Вариант Б — Go на хосте, инфраструктура в Docker
 
 ```bash
 docker compose up -d postgres redis
 export DATABASE_URL="postgres://ezra:ezra@localhost:5432/ezra?sslmode=disable"
 export REDIS_URL="redis://localhost:6379"
 make migrate-up
-make run   # go run ./cmd/ezra, listens on :8080 by default
+make run   # go run ./cmd/ezra, слушает :8080 по умолчанию
 ```
 
-## Environment variables
+## Переменные окружения
 
-All have working defaults except where noted; only set what you need.
+У всех есть рабочие значения по умолчанию, кроме отмеченных; задавай только
+то, что действительно нужно.
 
-| Var | Default | Purpose |
+| Переменная | По умолчанию | Назначение |
 |---|---|---|
-| `DATABASE_URL` | `postgres://ezra:ezra@localhost:5432/ezra?sslmode=disable` | Postgres DSN |
-| `REDIS_URL` | `redis://localhost:6379` | Redis — sessions + asynq broker |
-| `PORT` | `8080` | HTTP listen port |
-| `FIREBASE_CREDENTIALS_FILE` | `firebase-credentials.json` | Firebase Admin SDK service-account file (only needed for the Firebase login path) |
-| `MAPBOX_TOKEN` | `""` | Mapbox, server-side use |
-| `OVERPASS_ENDPOINTS` | built-in defaults | Comma-separated Overpass (OSM) API URLs used for lazy cell/region seeding |
-| `MAX_SPEED_KMH` | `50.0` | Anti-cheat position-update speed cap (km/h) |
-| `DOME_SUPPRESSION_PER_HOUR` | canon default (`30.0`) | Infection suppression rate under an active dome |
-| `EZRA_ALLOW_DEV_IAP` | unset | If `"1"`, `/shop/buy` accepts a fake `"dev"` purchase receipt for local IAP testing |
+| `DATABASE_URL` | `postgres://ezra:ezra@localhost:5432/ezra?sslmode=disable` | DSN для Postgres |
+| `REDIS_URL` | `redis://localhost:6379` | Redis — сессии + брокер asynq |
+| `PORT` | `8080` | Порт, на котором слушает HTTP |
+| `FIREBASE_CREDENTIALS_FILE` | `firebase-credentials.json` | Файл service-account для Firebase Admin SDK (нужен только для Firebase-логина) |
+| `MAPBOX_TOKEN` | `""` | Mapbox, использование на стороне сервера |
+| `OVERPASS_ENDPOINTS` | встроенные значения по умолчанию | URL Overpass (OSM) API через запятую, для ленивого посева клеток/регионов |
+| `MAX_SPEED_KMH` | `50.0` | Порог скорости для античита обновления позиции (км/ч) |
+| `DOME_SUPPRESSION_PER_HOUR` | значение по умолчанию из canon (`30.0`) | Скорость подавления заражения под активным куполом |
+| `EZRA_ALLOW_DEV_IAP` | не задана | Если `"1"`, `/shop/buy` принимает фейковый чек `"dev"` для локального теста IAP |
 
-`cmd/bot` (the debug bot swarm, not the game server) has its own env vars —
-see `cmd/bot/README.md`.
+У `cmd/bot` (рой ботов для отладки, не игровой сервер) свои переменные
+окружения — см. `cmd/bot/README.md`.
 
-## Auth
+## Авторизация
 
-You don't need a Firebase project to develop locally. `POST /auth/register`
-with a `login`/`password` body creates a password-based player:
+Firebase-проект для локальной разработки не нужен. `POST /auth/register` с
+телом `login`/`password` создаёт игрока с паролем:
 
 ```bash
 curl -s -X POST http://localhost:8081/api/v1/auth/register \
@@ -91,33 +91,33 @@ curl -s http://localhost:8081/api/v1/player \
   -H 'Authorization: Bearer <session_token>'
 ```
 
-If you specifically need to exercise the Firebase login path (e.g. testing
-client integration), set up a Firebase project, place its service-account
-JSON as `firebase-credentials.json` at the repo root (already gitignored —
-never commit it), and set `FIREBASE_CREDENTIALS_FILE` if you put it
-somewhere else.
+Если тебе конкретно нужно прогнать Firebase-логин (например, тест
+интеграции с клиентом) — заведи Firebase-проект, положи его
+service-account JSON как `firebase-credentials.json` в корень репозитория
+(уже в gitignore — никогда не коммить его) и укажи
+`FIREBASE_CREDENTIALS_FILE`, если положил файл в другое место.
 
-## Seeding the map
+## Посев карты
 
-There's no seed script — cells are created lazily. The first
-`GET /map/cells?lat=...&lng=...&radius_km=...` for a new ~0.1° region
-triggers `cell.Seeder` to query Overpass and populate that area. To warm up
-a region manually:
+Отдельного seed-скрипта нет — клетки создаются лениво. Первый запрос
+`GET /map/cells?lat=...&lng=...&radius_km=...` для нового региона ~0.1°
+триггерит `cell.Seeder`, который запрашивает Overpass и заполняет эту
+область. Чтобы прогреть регион вручную:
 
 ```bash
 curl 'http://localhost:8081/api/v1/map/cells?lat=53.13&lng=50.15&radius_km=1.5' \
   -H 'Authorization: Bearer <session_token>'
 ```
 
-## Exercising multiplayer features
+## Проверка мультиплеерных фич
 
-`cmd/bot` is a headless bot swarm that plays the game over the same public
-REST API a real client uses — useful for generating traffic to test
-faction war, PvP, capture, or general crowd density without multiple real
-devices. See `cmd/bot/README.md` for usage; it's a separate `go run`
-target, not part of the production server.
+`cmd/bot` — headless-рой ботов, играющий через тот же публичный REST API,
+что и реальный клиент; полезен, чтобы генерировать трафик для теста
+faction war, PvP, захвата или просто плотности игроков без нескольких
+реальных устройств. Использование — в `cmd/bot/README.md`; это отдельная
+цель `go run`, не часть продакшн-сервера.
 
-## Tests
+## Тесты
 
 ```bash
 make test

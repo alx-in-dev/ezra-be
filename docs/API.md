@@ -1,28 +1,27 @@
 # API Reference
 
-Base path: `/api/v1`. All routes below require `Authorization: Bearer
-<session_token>` **except** the ones explicitly marked public. Domain terms
-are explained in [DOMAIN_GLOSSARY.md](DOMAIN_GLOSSARY.md); the wiring is in
-[ARCHITECTURE.md](ARCHITECTURE.md). This is a map of the surface, not a full
-request/response schema reference — read the linked handler for exact
-payloads.
+Базовый путь: `/api/v1`. Все роуты ниже требуют `Authorization: Bearer
+<session_token>`, **кроме** явно помеченных как публичные. Доменные термины
+объяснены в [DOMAIN_GLOSSARY.md](DOMAIN_GLOSSARY.md); как всё собрано — в
+[ARCHITECTURE.md](ARCHITECTURE.md). Это карта поверхности API, а не полная
+схема запросов/ответов — за точным payload'ом смотри соответствующий handler.
 
-`GET /health` (public, outside `/api/v1`) — liveness check.
+`GET /health` (публичный, вне `/api/v1`) — проверка живости.
 
 ## Auth — `internal/auth`
 
-| Method | Path | Public? | Handler |
+| Метод | Путь | Публичный? | Handler |
 |---|---|---|---|
-| POST | `/auth/register` | yes | `authHandler.Register` |
-| POST | `/auth/login` | yes | `authHandler.Login` |
+| POST | `/auth/register` | да | `authHandler.Register` |
+| POST | `/auth/login` | да | `authHandler.Login` |
 | POST | `/auth/logout` | | `authHandler.Logout` |
 
-Both register and login accept either `{firebase_token, username}` or
-`{login, password}` in the body — see [ARCHITECTURE.md#auth](ARCHITECTURE.md#auth).
+И register, и login принимают в теле либо `{firebase_token, username}`,
+либо `{login, password}` — см. [ARCHITECTURE.md#авторизация](ARCHITECTURE.md#авторизация).
 
-## Player & profile — `internal/player`
+## Игрок и профиль — `internal/player`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/player` | `playerHandler.GetPlayer` |
 | GET | `/profile` | `playerHandler.GetProfile` |
@@ -31,28 +30,28 @@ Both register and login accept either `{firebase_token, username}` or
 | POST | `/onboarding/advance` | `playerHandler.AdvanceOnboarding` |
 | GET | `/skills` | `playerHandler.GetSkills` |
 | POST | `/skills/{id}/unlock` | `playerHandler.UnlockSkill` |
-| PATCH | `/player/position` | `playerHandler.UpdatePosition` (anti-cheat speed check) |
+| PATCH | `/player/position` | `playerHandler.UpdatePosition` (проверка скорости — античит) |
 | POST | `/player/push-token` | `pushHandler.RegisterToken` |
 
-## Map — `internal/cell`, `internal/network`
+## Карта — `internal/cell`, `internal/network`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/map/cells` | `cellHandler.GetCells` |
 | GET | `/map/fields` | `networkHandler.GetRegionFields` |
 
 ## Network / Core — `internal/network`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | POST | `/core` | `networkHandler.PlaceCore` |
 | POST | `/core/relocate` | `networkHandler.RelocateCore` |
 | POST | `/core/upgrade` | `networkHandler.UpgradeCore` |
 | GET | `/network` | `networkHandler.GetNetwork` |
 
-## Towers — `internal/tower`, `internal/capture`
+## Башни — `internal/tower`, `internal/capture`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | POST | `/towers` | `towerHandler.Create` |
 | GET | `/towers/mine` | `towerHandler.GetMine` |
@@ -60,11 +59,11 @@ Both register and login accept either `{firebase_token, username}` or
 | POST | `/towers/{id}/repair` | `towerHandler.Repair` |
 | DELETE | `/towers/{id}` | `towerHandler.Delete` |
 | POST | `/towers/{id}/capture/lockpick` | `captureHandler.Lockpick` |
-| POST | `/towers/{id}/capture/force` | `captureHandler.ForceCapture` (starts a battle) |
+| POST | `/towers/{id}/capture/force` | `captureHandler.ForceCapture` (запускает бой) |
 
-## Stations — `internal/station`
+## Станции — `internal/station`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/stations` | `stationHandler.List` |
 | POST | `/stations` | `stationHandler.Build` |
@@ -72,7 +71,7 @@ Both register and login accept either `{firebase_token, username}` or
 
 ## City Links — `internal/citylink`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/city-links` | `cityLinkHandler.List` |
 | GET | `/city-links/search` | `cityLinkHandler.Search` |
@@ -82,16 +81,16 @@ Both register and login accept either `{firebase_token, username}` or
 | POST | `/city-links/requests/{id}/reject` | `cityLinkHandler.Reject` |
 | POST | `/city-links/{id}/remove` | `cityLinkHandler.Remove` |
 
-## Realtime — `internal/realtime`
+## Реалтайм — `internal/realtime`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
-| GET | `/events` | `realtimeHandler.Stream` (SSE, long-lived) |
-| POST | `/events/test` | `realtimeHandler.SelfTest` (publishes a sample event to yourself) |
+| GET | `/events` | `realtimeHandler.Stream` (SSE, долгоживущее соединение) |
+| POST | `/events/test` | `realtimeHandler.SelfTest` (публикует тестовое событие тебе же) |
 
 ## Faction & FactionWar — `internal/faction`, `internal/factionwar`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/faction` | `factionHandler.Status` |
 | POST | `/faction/choose` | `factionHandler.Choose` |
@@ -100,14 +99,14 @@ Both register and login accept either `{firebase_token, username}` or
 
 ## PvP — `internal/pvp`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/pvp/targets` | `pvpHandler.Targets` |
 | POST | `/pvp/breach` | `pvpHandler.Breach` |
 
 ## Symbiont — `internal/symbiont`, `internal/roster`, `internal/resonance`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/symbiont/status` | `symbiontHandler.Status` |
 | POST | `/symbiont/raise` | `symbiontHandler.Raise` |
@@ -119,24 +118,24 @@ Both register and login accept either `{firebase_token, username}` or
 | GET | `/resonance` | `resonanceHandler.Status` |
 | POST | `/resonance/activate` | `resonanceHandler.Activate` |
 
-## Hives — `internal/hive`
+## Ульи (Hives) — `internal/hive`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/hives` | `hiveHandler.List` |
 | POST | `/hives/{id}/empower` | `hiveHandler.Empower` |
 
 ## Spire — `internal/spire`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/spire` | `spireHandler.Status` |
 | POST | `/spire/contribute-fragment` | `spireHandler.ContributeFragment` |
 | POST | `/spire/contribute` | `spireHandler.ContributeResources` |
 
-## Army: units, squads, battles — `internal/unit`, `internal/squad`, `internal/battle`
+## Армия: юниты, отряды, бои — `internal/unit`, `internal/squad`, `internal/battle`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/units` | `unitHandler.List` |
 | POST | `/units` | `unitHandler.Recruit` |
@@ -148,11 +147,11 @@ Both register and login accept either `{firebase_token, username}` or
 | DELETE | `/squads/{id}` | `squadHandler.Disband` |
 | POST | `/battles/start` | `battleHandler.Start` |
 | POST | `/battles/{id}/action` | `battleHandler.Action` |
-| POST | `/battles/{id}/overcharge` | `battleHandler.Overcharge` (v1.0+, see canon gating) |
+| POST | `/battles/{id}/overcharge` | `battleHandler.Overcharge` (v1.0+, см. гейтинг canon) |
 
-## Pets & survivors — `internal/pet`, `internal/survivor`
+## Питомцы и survivors — `internal/pet`, `internal/survivor`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/pets` | `petHandler.GetPets` |
 | POST | `/pets/starter-claim` | `petHandler.ClaimStarter` |
@@ -161,9 +160,9 @@ Both register and login accept either `{firebase_token, username}` or
 | GET | `/survivors` | `survivorHandler.Spawn` |
 | POST | `/survivors/recruit` | `survivorHandler.Recruit` |
 
-## Progression: items, achievements, bestiary, quests — `internal/item`, `internal/achievement`, `internal/bestiary`, `internal/quest`
+## Прогрессия: предметы, достижения, бестиарий, квесты — `internal/item`, `internal/achievement`, `internal/bestiary`, `internal/quest`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/items` | `itemHandler.List` |
 | GET | `/achievements` | `achievementHandler.Get` |
@@ -172,9 +171,9 @@ Both register and login accept either `{firebase_token, username}` or
 | POST | `/quests/{id}/claim` | `questHandler.ClaimQuest` |
 | POST | `/streaks/checkin` | `questHandler.CheckIn` |
 
-## Shop — `internal/shop`
+## Магазин — `internal/shop`
 
-| Method | Path | Handler |
+| Метод | Путь | Handler |
 |---|---|---|
 | GET | `/shop/catalog` | `shopHandler.GetCatalog` |
 | POST | `/shop/buy` | `shopHandler.Buy` |
@@ -184,5 +183,5 @@ Both register and login accept either `{firebase_token, username}` or
 
 ---
 
-Route source of truth: `cmd/ezra/main.go`. If this page and the code
-disagree, the code wins — please send a fix.
+Источник истины по роутам: `cmd/ezra/main.go`. Если эта страница и код
+разошлись — прав код, пришли, пожалуйста, фикс.

@@ -1,24 +1,23 @@
-# Architecture
+# Архитектура
 
-## Layering
+## Слои
 
-Every game-domain package under `internal/` follows the same shape:
+Каждый игровой пакет в `internal/` устроен одинаково:
 
 ```
-model.go        types / DTOs
-repository.go   Postgres access — an interface + a Pg-backed implementation
-service.go      business logic, talks to the repository (and other services)
-handler.go      HTTP layer: decode request → call service → encode response
-worker.go       (optional) asynq task handler(s) for background jobs
-*_test.go       unit tests against hand-written fakes of the interfaces above
+model.go        типы / DTO
+repository.go   доступ к Postgres — интерфейс + реализация поверх Pg
+service.go      бизнес-логика, обращается к repository (и другим сервисам)
+handler.go      HTTP-слой: декодировать запрос → вызвать сервис → закодировать ответ
+worker.go       (опционально) обработчики asynq-задач для фоновой работы
+*_test.go       unit-тесты против самописных фейков интерфейсов выше
 ```
 
-`internal/canon` is the one exception: pure constants and rule functions
-(release-stage gating, battle/tower/network tuning) shared by other packages,
-with no DB access of its own.
+`internal/canon` — единственное исключение: чистые константы и функции-правила
+(гейтинг по release-stage, тюнинг боя/башен/сети), общие для остальных
+пакетов, без своего доступа к БД.
 
-There's no dependency-injection framework. Everything is constructed by hand,
-in order, in `cmd/ezra/main.go`:
+DI-фреймворка нет. Всё собирается вручную, по порядку, в `cmd/ezra/main.go`:
 
 ```go
 db, err := platform.NewPostgres(ctx, cfg.DatabaseURL)
@@ -30,172 +29,173 @@ towerHandler := tower.NewHandler(towerSvc)
 r.Post("/towers", towerHandler.Create)
 ```
 
-It's long (~585 lines) but linear and easy to trace — if you want to know
-what a package depends on, read its constructor call in `main.go`. One
-notable pattern: `cell` and `tower` would import each other, so `main.go`
-defines a small `towerReaderAdapter` there to break the cycle instead of
-merging the packages.
+Файл длинный (~585 строк), но линейный и легко читается — если нужно узнать,
+от чего зависит пакет, читай его конструктор в `main.go`. Один заметный
+паттерн: `cell` и `tower` логически импортировали бы друг друга, поэтому
+`main.go` определяет небольшой `towerReaderAdapter`, чтобы разорвать цикл, а
+не сливать пакеты в один.
 
 ## HTTP
 
-Routing is [chi](https://github.com/go-chi/chi). Everything lives under
-`/api/v1`, split into two groups:
+Роутинг — [chi](https://github.com/go-chi/chi). Всё живёт под `/api/v1`,
+разбито на две группы:
 
-- **Public**: `GET /health`, `POST /auth/register`, `POST /auth/login`.
-- **Protected**: everything else, wrapped in `r.Group(...)` with
-  `auth.AuthMiddleware` applied. See [API.md](API.md) for the full route
-  list.
+- **Публичные**: `GET /health`, `POST /auth/register`, `POST /auth/login`.
+- **Защищённые**: всё остальное, обёрнуто в `r.Group(...)` с
+  `auth.AuthMiddleware`. Полный список роутов — в [API.md](API.md).
 
-Global middleware (`pkg/middleware`), applied in this order: panic
-`Recovery` → request `Logging` → `CORS`. Rate limiting
-(`middleware.RateLimit`, Redis-backed token bucket) is available for
-per-route use but not applied globally.
+Глобальный middleware (`pkg/middleware`), применяется в таком порядке: panic
+`Recovery` → логирование запроса `Logging` → `CORS`. Rate limiting
+(`middleware.RateLimit`, token bucket на Redis) доступен для использования
+на отдельных роутах, но глобально не подключён.
 
-Shared request/response helpers (`httputil.Decode`, `httputil.JSON`,
-`httputil.Error`, typed error constructors like `NewBadRequest`/
-`NewUnauthorized`) and the request-scoped player-ID context live in
+Общие хелперы для запроса/ответа (`httputil.Decode`, `httputil.JSON`,
+`httputil.Error`, типизированные конструкторы ошибок вроде `NewBadRequest`/
+`NewUnauthorized`) и контекст с ID игрока в рамках запроса живут в
 `pkg/httputil`.
 
-## Auth
+## Авторизация
 
-Two independent login methods, both ending in the same session:
+Два независимых способа входа, оба заканчиваются одной и той же сессией:
 
-1. **Firebase**: client sends a Firebase ID token → `auth.Service.
-   VerifyFirebaseToken` validates it via the Firebase Admin SDK
-   (`platform.NewFirebase`) → resolves a `firebase_uid` → player is found or
-   created by that UID.
-2. **Login/password**: `login` + `password` → bcrypt-checked against the
-   stored hash.
+1. **Firebase**: клиент присылает Firebase ID token → `auth.Service.
+   VerifyFirebaseToken` проверяет его через Firebase Admin SDK
+   (`platform.NewFirebase`) → получает `firebase_uid` → игрок находится или
+   создаётся по этому UID.
+2. **Login/password**: `login` + `password` → сверяется через bcrypt с
+   сохранённым хешем.
 
-Either way, a successful `/auth/login` or `/auth/register` mints a random
-session token (`auth.Service.CreateSession`), stores
-`session:<token> → playerID` in Redis with a 7-day TTL, and returns it as
-`session_token`. Every protected route requires
-`Authorization: Bearer <token>`; `auth.AuthMiddleware` resolves it via Redis
-and 401s on anything missing/invalid/expired. `POST /auth/logout` just
-deletes the Redis key.
+В обоих случаях успешный `/auth/login` или `/auth/register` создаёт
+случайный токен сессии (`auth.Service.CreateSession`), сохраняет
+`session:<token> → playerID` в Redis с TTL 7 дней и возвращает его как
+`session_token`. Каждый защищённый роут требует
+`Authorization: Bearer <token>`; `auth.AuthMiddleware` резолвит его через
+Redis и отдаёт 401 на всё отсутствующее/невалидное/протухшее.
+`POST /auth/logout` просто удаляет ключ из Redis.
 
-No Firebase project is required for local development — the login/password
-path is fully self-contained. See [SETUP.md](SETUP.md).
+Для локальной разработки Firebase-проект не нужен — путь login/password
+полностью самодостаточен. См. [SETUP.md](SETUP.md).
 
-## Anti-cheat
+## Античит
 
-`internal/player` validates every `PATCH /player/position` update: given the
-player's last known position and the newly claimed one, it computes implied
-speed and rejects the update as `impossible_speed` above `MAX_SPEED_KMH`
-(default 50 km/h). This exists to catch GPS-spoofed "teleports". Local/dev
-environments raise the cap (see `docker-compose.yml`) so GPS-simulator tools
-can move freely.
+`internal/player` валидирует каждое обновление `PATCH /player/position`: по
+последней известной позиции игрока и заявленной новой считается неявная
+скорость, и обновление отклоняется как `impossible_speed`, если она выше
+`MAX_SPEED_KMH` (по умолчанию 50 км/ч). Это нужно, чтобы ловить
+GPS-спуфинг ("телепорты"). Локальные/dev-окружения поднимают этот порог
+(см. `docker-compose.yml`), чтобы GPS-симуляторы могли свободно двигаться.
 
-## Realtime
+## Реалтайм
 
-`internal/realtime` is a **Server-Sent Events** stream, not WebSocket:
-`GET /events` upgrades to a long-lived SSE connection, backed by an
-in-process, per-player pub/sub `Hub` (one Go channel per active
-subscription). It currently pushes defense alerts (e.g.
-`tower_under_attack`) so an owner finds out instantly instead of waiting for
-the next poll. A 20-second heartbeat comment keeps proxies from closing the
-connection; `POST /events/test` publishes a sample event to your own stream
-for manual QA.
+`internal/realtime` — это поток **Server-Sent Events**, не WebSocket:
+`GET /events` апгрейдится в долгоживущее SSE-соединение поверх
+внутрипроцессного pub/sub `Hub` на игрока (один Go-канал на активную
+подписку). Сейчас через него пушатся алерты обороны (например,
+`tower_under_attack`), чтобы владелец узнавал мгновенно, а не ждал
+следующего поллинга. Heartbeat-комментарий каждые 20 секунд не даёт
+прокси закрыть соединение; `POST /events/test` публикует тестовое событие
+в твой собственный поток для ручного QA.
 
-The hub is single-instance/in-memory — if the server ever scales
-horizontally, this needs a Redis-backed (or similar) fan-out instead.
+Hub работает в одном инстансе/в памяти — если сервер когда-нибудь будет
+масштабироваться горизонтально, тут понадобится fan-out на Redis (или
+аналоге).
 
-## Background jobs
+## Фоновые задачи
 
-One binary, `cmd/ezra`, runs three things as goroutines in the same process:
-the HTTP server, an asynq **worker** (task-type → handler routing via
-`asynq.ServeMux`), and an asynq **scheduler** (cron-style `@every`
-registrations). Redis is the job broker. There's no separate worker binary
-to deploy.
+Один бинарник, `cmd/ezra`, запускает три вещи как горутины в одном
+процессе: HTTP-сервер, asynq **worker** (роутинг тип задачи → обработчик
+через `asynq.ServeMux`) и asynq **scheduler** (регистрации в стиле cron,
+`@every`). Redis — брокер задач. Отдельного бинарника воркера для деплоя
+нет.
 
-| Interval | Task | Package |
+| Интервал | Задача | Пакет |
 |---|---|---|
-| 1m | `pet:auto_claim` | pet |
-| 1m | `squad:complete_missions` | squad |
-| 2m | `symbiont:drain_tick` | symbiont |
-| 5m | `infection:recalculate` | infection |
-| 10m | `rift:spawn_organic` | rift |
-| 10m | `roster:entity_tick` | roster |
-| 30m | `infection:tide_advance` | infection |
-| 1h | `rift:expand` | rift |
-| 1h | `hive:pulse` | hive |
-| 1h | `tower:accrue_passive_income` | tower |
-| 1h | `tower:pressure_tick` | tower |
-| 1h | `legacy:degrade` | legacy |
-| 6h | `spire:lifecycle` | spire |
-| 6h | `station:lifecycle` | station |
-| 6h | `unit:army_decay` | unit |
-| 24h | `factionwar:settle` | factionwar |
-| 24h | `shop:expire_subscriptions` | shop |
+| 1м | `pet:auto_claim` | pet |
+| 1м | `squad:complete_missions` | squad |
+| 2м | `symbiont:drain_tick` | symbiont |
+| 5м | `infection:recalculate` | infection |
+| 10м | `rift:spawn_organic` | rift |
+| 10м | `roster:entity_tick` | roster |
+| 30м | `infection:tide_advance` | infection |
+| 1ч | `rift:expand` | rift |
+| 1ч | `hive:pulse` | hive |
+| 1ч | `tower:accrue_passive_income` | tower |
+| 1ч | `tower:pressure_tick` | tower |
+| 1ч | `legacy:degrade` | legacy |
+| 6ч | `spire:lifecycle` | spire |
+| 6ч | `station:lifecycle` | station |
+| 6ч | `unit:army_decay` | unit |
+| 24ч | `factionwar:settle` | factionwar |
+| 24ч | `shop:expire_subscriptions` | shop |
 
-## Data layer
+## Слой данных
 
-- **PostgreSQL + PostGIS**: connected via `pgx` (`internal/platform/
-  postgres.go`); repositories hand-write SQL, no ORM. PostGIS is enabled in
-  the first migration; `cells.geom` is a `GEOMETRY(Point, 4326)` column with
-  a `GIST` index for spatial queries. `uuid-ossp` provides `uuid_generate_v4()`
-  for primary keys.
-- **Redis**: sessions (see Auth above) and the asynq broker/scheduler.
-- **Migrations**: [golang-migrate](https://github.com/golang-migrate/migrate),
-  `migrations/`, strict `NNN_description.up.sql` / `.down.sql` pairs (~96
-  files as of this writing). Run via `make migrate-up` / `make migrate-down`.
-  There's no ORM-driven auto-migration — every schema change is a new
-  numbered pair.
+- **PostgreSQL + PostGIS**: подключение через `pgx` (`internal/platform/
+  postgres.go`); репозитории пишут SQL руками, без ORM. PostGIS включается
+  в первой миграции; `cells.geom` — колонка `GEOMETRY(Point, 4326)` с
+  `GIST`-индексом для пространственных запросов. `uuid-ossp` даёт
+  `uuid_generate_v4()` для первичных ключей.
+- **Redis**: сессии (см. Авторизацию выше) и брокер/scheduler asynq.
+- **Миграции**: [golang-migrate](https://github.com/golang-migrate/migrate),
+  `migrations/`, строгие пары `NNN_description.up.sql` / `.down.sql` (~96
+  файлов на момент написания). Запускаются через `make migrate-up` /
+  `make migrate-down`. ORM-based авто-миграций нет — каждое изменение схемы
+  это новая нумерованная пара.
 
-## Package map
+## Карта пакетов
 
-| Package | Owns | Worker |
+| Пакет | Отвечает за | Воркер |
 |---|---|---|
-| `achievement` | Metric-based achievement tracking/unlocks | — |
-| `auth` | Login (Firebase + password), Redis sessions | — |
-| `battle` | Turn-based combat resolution vs rifts/hives | — |
-| `bestiary` | Discovered-enemy/tower/spectrum catalog | — |
-| `canon` | Central game-rule constants & pure functions | — |
-| `capture` | Lockpick / force tower capture | — |
-| `cell` | Map grid cells, lazy Overpass-based world seeding | — |
-| `citylink` | Player-to-player alliance links | — |
-| `faction` | Faction contact/choice/status | — |
-| `factionwar` | Seasonal faction scoring | daily settle |
-| `hive` | Symbiont hive lifecycle | hourly pulse |
-| `infection` | Cell infection recalculation, "tide" mechanic | 5m recalc, 30m tide |
-| `item` | Inventory | — |
-| `legacy` | Legacy (ex-owned) beacon degradation | hourly degrade |
-| `network` | Core placement/relocate/upgrade, region fields | — |
-| `pet` | Pet claim/send/recall | 1m auto-claim |
-| `platform` | Infra: Postgres, Redis, Firebase, Mapbox, Overpass, asynq, balance config | — |
-| `player` | Profile, resources, onboarding, position/anti-cheat, skills | — |
-| `push` | FCM push notifications | send queue |
-| `pvp` | PvP target listing + dome breach | — |
-| `quest` | Daily quests, streak check-in | — |
-| `realtime` | SSE event stream | — |
-| `resonance` | Symbiont Resonance Level status/activation | — |
-| `rift` | Rift lifecycle | hourly expand, 10m organic spawn |
-| `roster` | Symbiont entity roster | 10m entity tick |
-| `shop` | IAP catalog, purchases, subscriptions | 24h expire |
-| `spire` | Endgame Spire | 6h lifecycle |
-| `squad` | Squad create/send/recall, missions | 1m complete missions |
-| `station` | Player-built power plants | 6h lifecycle |
-| `survivor` | Recruitable NPCs | — |
-| `symbiont` | Symbiont status/raise/overload/recon | 2m drain tick |
-| `tower` | Tower build/repair/delete, income, pressure | hourly income, hourly pressure |
-| `unit` | Army units | 6h decay |
+| `achievement` | Достижения на основе метрик, разблокировки | — |
+| `auth` | Вход (Firebase + пароль), сессии в Redis | — |
+| `battle` | Пошаговый бой против разломов/ульев | — |
+| `bestiary` | Каталог открытых врагов/башен/спектров | — |
+| `canon` | Центральные игровые константы и чистые функции | — |
+| `capture` | Захват башни: lockpick / force | — |
+| `cell` | Клетки карты, ленивый посев мира через Overpass | — |
+| `citylink` | Альянсы между игроками | — |
+| `faction` | Контакт/выбор/статус фракции | — |
+| `factionwar` | Сезонный счёт фракций | ежедневный settle |
+| `hive` | Жизненный цикл улья симбионтов | ежечасный pulse |
+| `infection` | Пересчёт заражения клеток, механика "прилива" | 5м recalc, 30м tide |
+| `item` | Инвентарь | — |
+| `legacy` | Деградация "легаси"-башен (бывших) | ежечасный degrade |
+| `network` | Установка/перенос/апгрейд Core, региональные поля | — |
+| `pet` | Заявка/отправка/возврат питомца | 1м auto-claim |
+| `platform` | Инфраструктура: Postgres, Redis, Firebase, Mapbox, Overpass, asynq, конфиг баланса | — |
+| `player` | Профиль, ресурсы, онбординг, позиция/античит, навыки | — |
+| `push` | Push-уведомления через FCM | очередь отправки |
+| `pvp` | Список PvP-целей + пробитие купола | — |
+| `quest` | Дневные квесты, стрик за вход | — |
+| `realtime` | SSE-поток событий | — |
+| `resonance` | Статус/активация Resonance Level симбионтов | — |
+| `rift` | Жизненный цикл разломов | ежечасный expand, 10м organic spawn |
+| `roster` | Ростер сущностей симбионта | 10м entity tick |
+| `shop` | IAP-каталог, покупки, подписки | 24ч expire |
+| `spire` | Эндгейм-структура Spire | 6ч lifecycle |
+| `squad` | Создание/отправка/возврат отряда, миссии | 1м complete missions |
+| `station` | Электростанции, построенные игроками | 6ч lifecycle |
+| `survivor` | Вербуемые NPC | — |
+| `symbiont` | Статус/подъём/перегрузка/разведка симбионта | 2м drain tick |
+| `tower` | Постройка/ремонт/удаление башни, доход, давление | ежечасный доход, ежечасное давление |
+| `unit` | Юниты армии | 6ч decay |
 
-`pkg/` holds infra-agnostic shared code: `pkg/httputil` (HTTP helpers),
-`pkg/middleware` (CORS/logging/rate-limit/recovery), `pkg/geo` (distance
-math).
+`pkg/` содержит инфраструктурно-нейтральный общий код: `pkg/httputil`
+(HTTP-хелперы), `pkg/middleware` (CORS/логирование/rate-limit/recovery),
+`pkg/geo` (математика расстояний).
 
-## Testing
+## Тесты
 
-Business logic is unit-tested with hand-written in-memory fakes for each
-package's repository/collaborator interfaces — no mocking framework, no
-docker-compose-based integration suite. See any `internal/*/service_test.go`
-for the pattern (e.g. `internal/achievement/service_test.go`). Run everything
-with `make test`.
+Бизнес-логика покрыта unit-тестами с самописными in-memory фейками для
+repository/collaborator-интерфейсов каждого пакета — без mock-фреймворков и
+без docker-compose-based интеграционного набора. Пример паттерна — любой
+`internal/*/service_test.go` (например, `internal/achievement/service_test.go`).
+Запуск всего: `make test`.
 
-## Release gating
+## Гейтинг по релизам
 
-The backend is pinned to one `canon.ReleaseStage` (`mvp` / `v1.0` / `v1.1`)
-at a time; features can declare a minimum stage and get centrally gated via
-`canon.IsFeatureAvailable`. Check `internal/canon/canon.go` for what's
-currently live before assuming a feature is reachable.
+Бэкенд в любой момент времени закреплён за одним `canon.ReleaseStage`
+(`mvp` / `v1.0` / `v1.1`); фичи могут объявлять минимальную стадию и
+централизованно гейтиться через `canon.IsFeatureAvailable`. Что реально
+доступно прямо сейчас — смотри в `internal/canon/canon.go`, не полагайся
+на предположения.
