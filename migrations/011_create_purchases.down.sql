@@ -1,0 +1,3 @@
+ALTER TABLE players DROP COLUMN IF EXISTS crystals;
+DROP TABLE IF EXISTS subscriptions;
+DROP TABLE IF EXISTS purchases;

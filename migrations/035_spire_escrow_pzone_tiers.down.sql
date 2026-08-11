@@ -1,0 +1,3 @@
+ALTER TABLE spire_contributions DROP COLUMN IF EXISTS tier;
+ALTER TABLE spires DROP COLUMN IF EXISTS p_zone;
+ALTER TABLE spires DROP COLUMN IF EXISTS build_deadline;

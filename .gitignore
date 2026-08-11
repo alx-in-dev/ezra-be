@@ -1,0 +1,20 @@
+# Credentials / secrets — NEVER commit
+firebase-credentials.json
+.env
+cmd/bot/run.local.sh
+
+# Build artifacts
+bin/
+/ezra
+/seed
+/bot
+*.dump
+*.bak
+*.bak.*
+
+# Local dev state
+.tmp/
+
+# OS
+.DS_Store
+*.swp

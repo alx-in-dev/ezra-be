@@ -1,0 +1,1 @@
+ALTER TABLE towers DROP COLUMN IF EXISTS legacy_since;

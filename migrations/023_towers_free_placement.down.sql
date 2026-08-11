@@ -1,0 +1,5 @@
+DROP INDEX IF EXISTS idx_towers_geog;
+ALTER TABLE towers
+    DROP COLUMN IF EXISTS geom,
+    DROP COLUMN IF EXISTS lng,
+    DROP COLUMN IF EXISTS lat;

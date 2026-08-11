@@ -1,0 +1,2 @@
+ALTER TABLE cells DROP CONSTRAINT IF EXISTS fk_cells_tower;
+DROP TABLE IF EXISTS towers;

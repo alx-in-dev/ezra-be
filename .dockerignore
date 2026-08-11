@@ -1,0 +1,4 @@
+bin/
+.env
+firebase-credentials.json
+*.md

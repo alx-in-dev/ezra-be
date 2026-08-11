@@ -1,0 +1,30 @@
+infection:
+  base_growth_per_hour: 0.8
+  neighbor_bonus: 0.3
+  recalc_interval_min: 5
+
+tower:
+  overload_radius_m: 100
+  overload_max_count: 5
+
+battle:
+  timeout_sec: 60
+  overcharge_multiplier: 2.5
+  overcharge_loss_chance: 0.25
+
+army:
+  decay_rate_per_24h: 0.05
+  max_decay: 0.30
+  freeze_after_days: 7
+
+pet:
+  search_duration_min: [45, 35, 25, 18, 12]
+  rare_chance: [0.05, 0.10, 0.18, 0.28, 0.40]
+
+resources:
+  max_energy: 2000
+  max_materials: 500
+
+progression:
+  xp_base: 100
+  xp_exponent: 1.6

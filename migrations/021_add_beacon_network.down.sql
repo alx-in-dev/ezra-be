@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS domed_cells;
+DROP TABLE IF EXISTS beacon_links;
+DROP TABLE IF EXISTS cores;

@@ -1,0 +1,2 @@
+ALTER TABLE units DROP CONSTRAINT IF EXISTS fk_units_squad;
+DROP TABLE IF EXISTS squads;

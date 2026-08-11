@@ -1,0 +1,52 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8081:8080"
+    environment:
+      DATABASE_URL: postgres://ezra:ezra@postgres:5432/ezra?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      PORT: "8080"
+      FIREBASE_CREDENTIALS_FILE: /run/secrets/firebase-credentials.json
+      # Dev: effectively disable the W-03 speed anti-cheat so FakeGPS
+      # teleports update the position instantly. Production default is 50.
+      MAX_SPEED_KMH: "100000"
+      # Dev: domes clear infection in minutes (50%/5-min tick) instead of
+      # the production 30%/hour — safe zones appear fast for testing.
+      DOME_SUPPRESSION_PER_HOUR: "600"
+    volumes:
+      - ./firebase-credentials.json:/run/secrets/firebase-credentials.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: ezra
+      POSTGRES_PASSWORD: ezra
+      POSTGRES_DB: ezra
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ezra"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:

@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS daily_quests;
+DROP TABLE IF EXISTS streaks;

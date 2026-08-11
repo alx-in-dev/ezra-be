@@ -1,0 +1,3 @@
+ALTER TABLE players ADD COLUMN login TEXT UNIQUE;
+ALTER TABLE players ADD COLUMN password_hash TEXT;
+ALTER TABLE players ALTER COLUMN firebase_uid DROP NOT NULL;

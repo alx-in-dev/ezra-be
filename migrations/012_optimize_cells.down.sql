@@ -1,0 +1,1 @@
+-- No-op: CLUSTER and ANALYZE are not reversible

@@ -1,0 +1,1 @@
+ALTER TABLE domed_cells DROP COLUMN IF EXISTS sealed;

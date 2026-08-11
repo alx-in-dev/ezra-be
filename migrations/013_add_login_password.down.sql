@@ -1,0 +1,3 @@
+ALTER TABLE players DROP COLUMN IF EXISTS password_hash;
+ALTER TABLE players DROP COLUMN IF EXISTS login;
+ALTER TABLE players ALTER COLUMN firebase_uid SET NOT NULL;
