@@ -179,6 +179,22 @@ func (r *PgRepository) CountBuildingCellsInRadius(ctx context.Context, lat, lng,
 	return n, nil
 }
 
+// RaiseInfectionInRadius adds delta infection (capped at 100) to every cell
+// within radiusM of (lat,lng) in a single statement, replacing the old
+// per-cell read-modify-write loop (rift expansion touching hundreds of cells
+// meant hundreds of sequential round trips). Mirrors ClearInfectionInRadius's
+// shape/param order and its "optional interface" contract placement.
+func (r *PgRepository) RaiseInfectionInRadius(ctx context.Context, lat, lng, radiusM, delta float64) (int64, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE cells SET infection = LEAST(100.0, infection + $4), last_calculated = NOW()
+		WHERE ST_DWithin(geom, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)`,
+		lng, lat, radiusM, delta)
+	if err != nil {
+		return 0, fmt.Errorf("raise infection in radius: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ClearInfectionInRadius knocks every cell within radiusM of (lat,lng) down to
 // `target` infection (only cells currently above it) and returns how many rows
 // changed. Used for the soft-start pocket under a new player's first Core.

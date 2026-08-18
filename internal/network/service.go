@@ -41,8 +41,18 @@ func NewService(repo Repository, cells cell.Repository, players player.Repositor
 // ensureRegion best-effort seeds the region around (lat,lng) so the cell grid
 // exists before a nearest-cell lookup. Errors are logged, not fatal: a partial
 // or failed seed just falls back to whatever cells already exist.
+//
+// (0,0) is treated as "no GPS fix yet" (the player row's zero-value default
+// before their first position update), never a real place to seed — without
+// this guard, placing a Core/beacon in that window kicks off an ~80s Overpass
+// fetch for Null Island that stalls every other request until it times out.
+// Mirrors the client's own LocationService.IsCoordinateUsable.
 func (s *Service) ensureRegion(ctx context.Context, lat, lng float64) {
 	if s.seeder == nil {
+		return
+	}
+	if lat == 0 && lng == 0 {
+		slog.Warn("network: ensure region skipped, no position yet (0,0)")
 		return
 	}
 	if err := s.seeder.EnsureRegion(ctx, lat, lng); err != nil {

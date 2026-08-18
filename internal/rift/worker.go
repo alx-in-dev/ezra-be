@@ -69,23 +69,12 @@ func (w *Worker) HandleExpand(ctx context.Context, _ *asynq.Task) error {
 		// Radius in meters: RadiusCells cells out, using the cell diagonal
 		// (×~1.41) so corner cells inside the square footprint are covered.
 		radiusM := float64(r.RadiusCells) * cellSizeM * 1.4142
-		affected, err := w.service.cells.GetInRadius(ctx, c.Lat, c.Lng, radiusM)
+		touched, err := w.raiseInfectionInRadius(ctx, c.Lat, c.Lng, radiusM, expandInfectionPct)
 		if err != nil {
-			slog.Warn("rift expand: radius query failed", "rift_id", r.ID, "error", err)
+			slog.Warn("rift expand: radius update failed", "rift_id", r.ID, "error", err)
 			continue
 		}
-
-		for _, n := range affected {
-			newInfection := n.Infection + expandInfectionPct
-			if newInfection > 100 {
-				newInfection = 100
-			}
-			if err := w.service.cells.Update(ctx, n.ID, newInfection); err != nil {
-				slog.Warn("rift expand: cell update failed", "cell_id", n.ID, "error", err)
-				continue
-			}
-			cellsTouched++
-		}
+		cellsTouched += touched
 	}
 
 	slog.Info("rift expansion completed", "rifts_processed", len(openRifts), "cells_touched", cellsTouched)
@@ -95,6 +84,39 @@ func (w *Worker) HandleExpand(ctx context.Context, _ *asynq.Task) error {
 func NewExpandTask() *asynq.Task {
 	payload, _ := json.Marshal(map[string]string{})
 	return asynq.NewTask(TypeExpand, payload)
+}
+
+// raiseInfectionInRadius adds delta infection to every cell within radiusM in
+// a single set-based UPDATE when the underlying cell.Repository supports it
+// (production: cell.CachedRepository → cell.PgRepository.RaiseInfectionInRadius).
+// Falls back to the old GetInRadius + per-cell Update loop otherwise (unit
+// tests use a plain mock that doesn't implement the optional interface).
+func (w *Worker) raiseInfectionInRadius(ctx context.Context, lat, lng, radiusM, delta float64) (int, error) {
+	type raiser interface {
+		RaiseInfectionInRadius(ctx context.Context, lat, lng, radiusM, delta float64) (int64, error)
+	}
+	if rr, ok := w.service.cells.(raiser); ok {
+		touched, err := rr.RaiseInfectionInRadius(ctx, lat, lng, radiusM, delta)
+		return int(touched), err
+	}
+
+	affected, err := w.service.cells.GetInRadius(ctx, lat, lng, radiusM)
+	if err != nil {
+		return 0, err
+	}
+	touched := 0
+	for _, n := range affected {
+		newInfection := n.Infection + delta
+		if newInfection > 100 {
+			newInfection = 100
+		}
+		if err := w.service.cells.Update(ctx, n.ID, newInfection); err != nil {
+			slog.Warn("rift expand: cell update failed", "cell_id", n.ID, "error", err)
+			continue
+		}
+		touched++
+	}
+	return touched, nil
 }
 
 // HandleSpawnOrganic opens density-capped rifts on hot cells (canon

@@ -112,6 +112,22 @@ func (c *CachedRepository) CountBuildingCellsInRadius(ctx context.Context, lat, 
 	return cc.CountBuildingCellsInRadius(ctx, lat, lng, radiusM)
 }
 
+// RaiseInfectionInRadius delegates to the inner repository when it supports the
+// optional raiser interface (the production PgRepository does). Like
+// ClearInfectionInRadius, this skips per-cell cache invalidation — the radius
+// and by-ID caches (cellCacheTTL) go stale for at most 30s, which an hourly
+// rift tick tolerates fine.
+func (c *CachedRepository) RaiseInfectionInRadius(ctx context.Context, lat, lng, radiusM, delta float64) (int64, error) {
+	type raiser interface {
+		RaiseInfectionInRadius(ctx context.Context, lat, lng, radiusM, delta float64) (int64, error)
+	}
+	rr, ok := c.inner.(raiser)
+	if !ok {
+		return 0, nil
+	}
+	return rr.RaiseInfectionInRadius(ctx, lat, lng, radiusM, delta)
+}
+
 // ClearInfectionInRadius delegates to the inner repository when it supports the
 // optional clearer interface (the production PgRepository does). The radius cell
 // cache is short-lived (cellCacheTTL); a one-time soft-start clear tolerates it.
