@@ -233,3 +233,27 @@ func TestPlacement_AllowedInPocketRecordsCell(t *testing.T) {
 		t.Fatal("a pocket placement must be recorded for tick-refresh")
 	}
 }
+
+// fakeGate stubs the faction gate.
+type fakeGate struct{ allow bool }
+
+func (g fakeGate) CanOwnNest(_ context.Context, _ string) (bool, error) { return g.allow, nil }
+
+func TestOpenFirstNest_RejectedForNonSymbiont(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := NewService(repo, fakeCells{}, nil, nil).WithFactionGate(fakeGate{allow: false})
+	if _, err := svc.OpenFirstNest(context.Background(), "human", "c1"); err == nil {
+		t.Fatal("a non-Symbiont must not be able to open a nest")
+	}
+	if repo.created != 0 {
+		t.Fatal("no nest should have been created for a non-Symbiont")
+	}
+}
+
+func TestOpenFirstNest_AllowedForSymbiont(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := NewService(repo, fakeCells{}, nil, nil).WithFactionGate(fakeGate{allow: true})
+	if _, err := svc.OpenFirstNest(context.Background(), "symb", "c1"); err != nil {
+		t.Fatalf("a committed Symbiont should open a nest: %v", err)
+	}
+}

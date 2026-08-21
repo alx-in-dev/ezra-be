@@ -176,7 +176,8 @@ func main() {
 	// (relocate/rebuild) and ResonanceGranter (collect buffer→profile).
 	nestRepo := nest.NewPgRepository(db)
 	nestSvc := nest.NewService(nestRepo, cellRepo, playerRepo, playerRepo).
-		WithEvents(realtimeHub) // R4-6: live "nest under attack" + ETA to the owner
+		WithEvents(realtimeHub). // R4-6: live "nest under attack" + ETA to the owner
+		WithPlacer(networkSvc)   // N3: open nest at the player's position (empty cell_id)
 	nestSvc.AddDefenseModifier(nest.NewSkillDefenderModifier(&nestDefenderReader{playerRepo})) // T-844: Defender skill hardens the nest
 	nestHandler := nest.NewHandler(nestSvc)
 	nestWorker := nest.NewWorker(nestSvc)
@@ -229,6 +230,10 @@ func main() {
 	factionSvc := faction.NewService(factionRepo)
 	factionSvc.SetResonanceReader(playerRepo) // #6: live Symbiont Resonance in /faction
 	factionHandler := faction.NewHandler(factionSvc)
+	// N3: only a committed Symbiont (faction=symbiont AND chosen) may own a nest —
+	// stops humans from farming faction-war territory and temp symbionts from
+	// leaving orphan nests (ADR-N3-11). Wired here, after factionSvc exists.
+	nestSvc.WithFactionGate(&nestFactionGate{svc: factionSvc})
 	// E2: side-gate war points (a Symbiont closing rifts must not farm the
 	// Human leaderboard) — wired late because factionRepo is created here.
 	factionWarSvc.SetFactionReader(factionRepo)
@@ -605,6 +610,21 @@ func main() {
 		slog.Error("shutdown error", "error", err)
 	}
 	slog.Info("server stopped")
+}
+
+// nestFactionGate adapts faction.Service to nest.FactionGate (ADR-N3-11): a
+// player may own a nest only as a committed Symbiont (faction=symbiont AND
+// chosen — not a temporary onboarding symbiont).
+type nestFactionGate struct {
+	svc *faction.Service
+}
+
+func (g *nestFactionGate) CanOwnNest(ctx context.Context, playerID string) (bool, error) {
+	st, err := g.svc.Status(ctx, playerID)
+	if err != nil {
+		return false, err
+	}
+	return st.Faction == faction.Symbiont && st.Chosen, nil
 }
 
 // nestDefenderReader adapts the player repo to nest.DefenderReader (T-844):

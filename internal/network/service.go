@@ -282,6 +282,13 @@ func (s *Service) CanConnect(ctx context.Context, playerID string, lat, lng floa
 // resolvePlacementPoint returns where a Core lands: with an empty cellID the
 // player's exact position (free placement) anchored to the nearest cell;
 // with an explicit cellID the legacy cell-centre snap (≤30m walk-up check).
+// ResolvePlayerPlacement resolves a placement cell at the player's current
+// server-side position (seeding the region if needed) — used by other features
+// (N3 nest onboarding) that place at "where I stand" without a client cell id.
+func (s *Service) ResolvePlayerPlacement(ctx context.Context, playerID string) (float64, float64, string, error) {
+	return s.resolvePlacementPoint(ctx, playerID, "")
+}
+
 func (s *Service) resolvePlacementPoint(ctx context.Context, playerID, cellID string) (float64, float64, string, error) {
 	if cellID != "" {
 		c, err := s.locateCell(ctx, playerID, cellID)

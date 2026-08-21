@@ -43,6 +43,22 @@ type DefenseModifier interface {
 	DefenseMultiplier(ctx context.Context, n *Nest) (float64, error)
 }
 
+// PlayerPlacer resolves a placement cell at the player's current position when
+// no cell id is supplied (nest onboarding: "open at where I stand", ADR-N3-11
+// guaranteed site). Optional — without it an empty cell id is an error.
+type PlayerPlacer interface {
+	ResolvePlayerPlacement(ctx context.Context, playerID string) (lat, lng float64, cellID string, err error)
+}
+
+// FactionGate reports whether a player may OWN a nest — only a COMMITTED
+// Symbiont (faction=symbiont AND chosen=true) can (ADR-N3-11). This stops a
+// human from opening a nest (which would farm faction-war territory), and stops
+// a temporary onboarding symbiont (chosen=false) from leaving an orphan nest
+// after reverting to human. Optional — nil skips the gate (tests).
+type FactionGate interface {
+	CanOwnNest(ctx context.Context, playerID string) (bool, error)
+}
+
 // Service holds the nest domain logic.
 type Service struct {
 	repo    Repository
@@ -51,6 +67,8 @@ type Service struct {
 	granter ResonanceGranter
 	events  EventPublisher
 	defense []DefenseModifier
+	faction FactionGate
+	placer  PlayerPlacer
 }
 
 // NewService wires the nest service. spender/granter may be nil (billing / grant
@@ -61,6 +79,29 @@ func NewService(repo Repository, cells CellLocator, spender crystalSpender, gran
 
 // WithEvents wires the realtime telegraph for siege warnings (fluent, optional).
 func (s *Service) WithEvents(p EventPublisher) *Service { s.events = p; return s }
+
+// WithFactionGate wires the "only a committed Symbiont may own a nest" gate
+// (fluent, optional). Without it the gate is skipped (tests).
+func (s *Service) WithFactionGate(g FactionGate) *Service { s.faction = g; return s }
+
+// WithPlacer wires the "open at my current position" resolver (fluent, optional).
+func (s *Service) WithPlacer(p PlayerPlacer) *Service { s.placer = p; return s }
+
+// requireSymbiont rejects a non-Symbiont-owner attempt to hold a nest (ADR-N3-11).
+func (s *Service) requireSymbiont(ctx context.Context, playerID string) error {
+	if s.faction == nil {
+		return nil
+	}
+	ok, err := s.faction.CanOwnNest(ctx, playerID)
+	if err != nil {
+		return fmt.Errorf("faction gate: %w", err)
+	}
+	if !ok {
+		return httputil.NewBadRequest("not_symbiont",
+			"гнездо доступно только симбионтам")
+	}
+	return nil
+}
 
 // GetByID returns a nest by id (satisfies battle.NestProvider).
 func (s *Service) GetByID(ctx context.Context, id string) (*Nest, error) {
@@ -107,6 +148,9 @@ func (s *Service) defenseWindow(ctx context.Context, n *Nest) time.Duration {
 // rebuild after collapse goes through Create (paid). Placement validation
 // (dome/pocket, guaranteed site) lands in T-848/T-843; here we resolve and plant.
 func (s *Service) OpenFirstNest(ctx context.Context, ownerID, cellID string) (*Nest, error) {
+	if err := s.requireSymbiont(ctx, ownerID); err != nil {
+		return nil, err
+	}
 	everOwned, err := s.repo.HasEverOwned(ctx, ownerID)
 	if err != nil {
 		return nil, err
@@ -123,6 +167,9 @@ func (s *Service) OpenFirstNest(ctx context.Context, ownerID, cellID string) (*N
 // friendly error. Rebuild after collapse costs crystals (part of the
 // Executable-Loss corridor, ADR-N3-7 — full calibration in T-842).
 func (s *Service) Create(ctx context.Context, ownerID, cellID string) (*Nest, error) {
+	if err := s.requireSymbiont(ctx, ownerID); err != nil {
+		return nil, err
+	}
 	live, err := s.repo.GetLiveByOwner(ctx, ownerID)
 	if err != nil {
 		return nil, err
@@ -161,7 +208,7 @@ func (s *Service) Relocate(ctx context.Context, ownerID, cellID string) (*Nest, 
 			"нельзя переносить гнездо под штурмом")
 	}
 
-	lat, lng, resolvedCell, err := s.resolvePoint(ctx, cellID)
+	lat, lng, resolvedCell, err := s.resolvePoint(ctx, ownerID, cellID)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +242,7 @@ func (s *Service) Relocate(ctx context.Context, ownerID, cellID string) (*Nest, 
 
 // plant resolves the placement point and inserts a level-1 nest.
 func (s *Service) plant(ctx context.Context, ownerID, cellID string) (*Nest, error) {
-	lat, lng, resolvedCell, err := s.resolvePoint(ctx, cellID)
+	lat, lng, resolvedCell, err := s.resolvePoint(ctx, ownerID, cellID)
 	if err != nil {
 		return nil, err
 	}
@@ -234,11 +281,15 @@ func (s *Service) checkPlacement(ctx context.Context, cellID string) (pocket boo
 	return pierced, nil
 }
 
-// resolvePoint turns a cell id into coordinates. Full placement rules (guaranteed
-// site, dome/pocket validation) are added in T-848/T-843 — this is the base.
-func (s *Service) resolvePoint(ctx context.Context, cellID string) (lat, lng float64, resolved string, err error) {
+// resolvePoint turns a cell id into coordinates. An empty cell id means "open at
+// where I stand": it resolves the player's current position via the placer
+// (guaranteed site, ADR-N3-11). Dome/pocket validation is applied by the caller.
+func (s *Service) resolvePoint(ctx context.Context, ownerID, cellID string) (lat, lng float64, resolved string, err error) {
 	if cellID == "" {
-		return 0, 0, "", httputil.NewBadRequest("no_cell", "укажите клетку для гнезда")
+		if s.placer == nil {
+			return 0, 0, "", httputil.NewBadRequest("no_cell", "укажите клетку для гнезда")
+		}
+		return s.placer.ResolvePlayerPlacement(ctx, ownerID)
 	}
 	c, err := s.cells.GetByID(ctx, cellID)
 	if err != nil {
