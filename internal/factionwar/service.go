@@ -169,6 +169,29 @@ func (s *Service) SettleSeason(ctx context.Context, season string) error {
 	return nil
 }
 
+// MigrationWindowOpen reports whether the N1 world/scoring migration may run
+// (T-826): the localization must land strictly BETWEEN seasons so the first
+// snapshot under the new source-based scoring (T-822) is post-wipe. The window
+// is open only when the current season is fresh — no player has scored yet, so
+// we are right after a weekly wipe — AND no past season is still awaiting
+// settlement. Derived from live state; no marker table. Satisfies the worldmigrate
+// SeasonGate interface (T-825).
+func (s *Service) MigrationWindowOpen(ctx context.Context) (bool, error) {
+	season := s.CurrentSeason()
+	scored, err := s.repo.SeasonScoreCount(ctx, season)
+	if err != nil {
+		return false, err
+	}
+	if scored > 0 {
+		return false, nil // season already in play — refuse until the next wipe
+	}
+	unsettled, err := s.repo.UnsettledSeasons(ctx, season)
+	if err != nil {
+		return false, err
+	}
+	return len(unsettled) == 0, nil
+}
+
 // SettleDue settles every past season that still has unsettled scores.
 func (s *Service) SettleDue(ctx context.Context) error {
 	seasons, err := s.repo.UnsettledSeasons(ctx, s.CurrentSeason())

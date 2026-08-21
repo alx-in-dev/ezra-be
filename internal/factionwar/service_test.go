@@ -22,11 +22,12 @@ func TestSeasonFor(t *testing.T) {
 }
 
 type fakeRepo struct {
-	added     int
-	balance   RegionBalance
-	settled   bool
-	rewards   [][2]int // {rank, crystals}
-	unsettled []string
+	added      int
+	balance    RegionBalance
+	settled    bool
+	rewards    [][2]int // {rank, crystals}
+	unsettled  []string
+	scoreCount int
 }
 
 func (f *fakeRepo) AddPoints(ctx context.Context, p, s string, d int) (int, error) {
@@ -50,6 +51,9 @@ func (f *fakeRepo) UnsettledSeasons(ctx context.Context, except string) ([]strin
 	return f.unsettled, nil
 }
 func (f *fakeRepo) LastReward(ctx context.Context, p string) (*SeasonReward, error) { return nil, nil }
+func (f *fakeRepo) SeasonScoreCount(ctx context.Context, season string) (int, error) {
+	return f.scoreCount, nil
+}
 
 type fakeCrystals struct{ total int }
 
@@ -81,6 +85,29 @@ func TestAwardHumanAndStatus(t *testing.T) {
 	assert.Equal(t, 75, st.Balance.HumanPct)
 	assert.Equal(t, 140, st.YourContribution)
 	assert.Len(t, st.Leaderboard, 1)
+}
+
+func TestMigrationWindowOpen(t *testing.T) {
+	ctx := context.Background()
+
+	// Fresh season (no scores) and nothing unsettled → window OPEN.
+	open := &fakeRepo{scoreCount: 0, unsettled: nil}
+	svc := NewService(open)
+	got, err := svc.MigrationWindowOpen(ctx)
+	assert.NoError(t, err)
+	assert.True(t, got)
+
+	// Current season already has scores → season in play → CLOSED.
+	inPlay := &fakeRepo{scoreCount: 3, unsettled: nil}
+	got, err = NewService(inPlay).MigrationWindowOpen(ctx)
+	assert.NoError(t, err)
+	assert.False(t, got)
+
+	// A past season still awaits settlement → CLOSED.
+	pending := &fakeRepo{scoreCount: 0, unsettled: []string{"2026-W20"}}
+	got, err = NewService(pending).MigrationWindowOpen(ctx)
+	assert.NoError(t, err)
+	assert.False(t, got)
 }
 
 func TestCrystalsForRank(t *testing.T) {

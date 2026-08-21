@@ -8,6 +8,7 @@ import (
 	"github.com/ezra-game/server/internal/player"
 	"github.com/ezra-game/server/internal/unit"
 	"github.com/ezra-game/server/pkg/geo"
+	"github.com/ezra-game/server/pkg/httputil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -190,4 +191,28 @@ func TestRecruit_AdvancesOnboardingAfterSecondUnit(t *testing.T) {
 	assert.Equal(t, canon.OnboardingTutorialBattle, p.OnboardingStep)
 	unitsRepo.AssertExpectations(t)
 	playerRepo.AssertExpectations(t)
+}
+
+// fakeFaction is a stub FactionChecker (T-800).
+type fakeFaction struct{ symbionts map[string]bool }
+
+func (f fakeFaction) IsSymbiont(_ context.Context, playerID string) (bool, error) {
+	return f.symbionts[playerID], nil
+}
+
+func TestRecruit_RejectsSymbiont(t *testing.T) {
+	unitsRepo := &mockUnitRepo{}
+	playerRepo := &mockPlayerRepo{}
+	svc := NewService(unitsRepo, playerRepo).
+		WithFaction(fakeFaction{symbionts: map[string]bool{"sym-1": true}})
+	ctx := context.Background()
+
+	_, err := svc.Recruit(ctx, "sym-1", "fighter", 53.1951, 50.1001)
+
+	appErr, ok := err.(*httputil.AppError)
+	if !ok {
+		t.Fatalf("expected *httputil.AppError, got %T: %v", err, err)
+	}
+	assert.Equal(t, "symbiont_no_human_toolkit", appErr.Code)
+	unitsRepo.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
 }

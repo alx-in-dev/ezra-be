@@ -81,24 +81,48 @@ func BeaconPressureDamagePerHour(infection float64) float64 {
 // Energy-disk radii (Perimeter ZeroLayerRadius port): each node projects an
 // energy disk; the field/dome is the union of POWERED nodes' disks. The disk
 // is the VISIBLE zone only — transmission reach is ConnectionRadius below.
+//
+// The radius is derived from the node's own ConnectionRadius (by kind+level):
+// ConnRadius/2 + 25 (see NodeEnergyRadius). Any link's length is at most the
+// PARENT's ConnRadius, and the two endpoint disks sum to at least (parent
+// ConnRadius/2+25) + (child's /2+25) — so linked nodes always overlap and
+// merge into one dome for every kind/level pair in the tables below. A flat
+// 675 (worst-case 1080/1.6) was tried first and read as comically huge
+// around densely-packed beacons — deriving from the node's own reach keeps
+// low-tier clusters compact while upgraded relays still throw a wide field.
 const (
-	CoreEnergyRadiusM   = 160.0
-	BeaconEnergyRadiusM = 110.0
+	// CoreEnergyRadiusM is the level-1 Core disk (CoreConnRadiusByLevel[1]/2
+	// + 25) — used directly for the soft-start infection clear under a brand
+	// new (always level-1) Core.
+	CoreEnergyRadiusM = 175.0
+	// MaxEnergyRadiusM is the largest disk any node can project (level-3
+	// beacon: 1080/2+25) — scan padding for RegionFields so a node just
+	// outside the view whose disk reaches in is still included.
+	MaxEnergyRadiusM = 565.0
 )
 
-// ConnectionRadius (Perimeter ConnectionRadius port, decoupled from the energy
-// disk like Frame=300/Transmitter=500 vs ZeroLayer=200/100 in the original):
-// a new node joins the network when it stands within the ConnectionRadius of
-// an already-CONNECTED node, so upgraded nodes reach out farther and form
-// thin relay branches with no field around the line itself.
+// ConnectionRadius (Perimeter ConnectionRadius port): a new node joins the
+// network when it stands within the ConnectionRadius of an already-CONNECTED
+// node, so upgraded nodes reach out farther and form thin relay branches with
+// no field around the line itself.
+//
+// Perimeter's own Core=200/Frame=300 (AttributeLibrary) put the beacon's
+// reach at 1.5× the Core's — a relay always out-reaches the hub it extends
+// from. Ezra's beacon curve is rescaled by that same 1.5× factor anchored on
+// CoreConnRadiusByLevel[1] (450 = 300*1.5), keeping its own internal growth
+// shape (previously 250/400/600, ×1.6 then ×1.5) rather than the Core's
+// separate 5-tier curve, which has no Perimeter equivalent to port.
 var (
 	// Core level also buys reach: the higher the Core, the farther from it
 	// the first ring of beacons can stand. (Level already buys Ecap = how
 	// many beacons the network feeds — see CoreEcapByLevel.)
 	CoreConnRadiusByLevel = map[int]float64{1: 300, 2: 375, 3: 450, 4: 525, 5: 600}
 	// Beacon level buys reach: upgrade a frontier beacon to push the network
-	// deeper ("вглубь или вширь" choice per upgrade).
-	BeaconConnRadiusByLevel = map[int]float64{1: 250, 2: 400, 3: 600}
+	// deeper ("вглубь или вширь" choice per upgrade). Rescaled from the old
+	// 250/400/600 by 1.8× (450/250) so the base tier sits at CoreL1*1.5=450,
+	// matching Perimeter's Frame=300 vs Core=200 ratio; growth shape (×1.6,
+	// ×1.5 between tiers) preserved from the original tuning.
+	BeaconConnRadiusByLevel = map[int]float64{1: 450, 2: 720, 3: 1080}
 )
 
 // NodeConnectionRadius returns how far a connected node reaches to attach new
@@ -116,12 +140,11 @@ func NodeConnectionRadius(isCore bool, level int) float64 {
 	return BeaconConnRadiusByLevel[1]
 }
 
-// NodeEnergyRadius returns a node's energy-disk radius.
-func NodeEnergyRadius(isCore bool) float64 {
-	if isCore {
-		return CoreEnergyRadiusM
-	}
-	return BeaconEnergyRadiusM
+// NodeEnergyRadius returns a node's energy-disk radius: half its own
+// ConnectionRadius plus 25m (see the derivation note above the constants).
+// Core: 175/212/250/287/325 by level; beacon: 250/385/565.
+func NodeEnergyRadius(isCore bool, level int) float64 {
+	return NodeConnectionRadius(isCore, level)/2 + 25
 }
 
 // CoreEcapByLevel is the energy budget a Core of a given level can sustain.

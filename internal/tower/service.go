@@ -36,6 +36,51 @@ type Service struct {
 	events EventPublisher
 	// allies resolves City-Link alliances (R4-4b mutual support). nil-safe.
 	allies AllyResolver
+	// faction gates construction to Humans and hostility checks to cross-
+	// faction targets (T-800/T-801). nil-safe: without it, gates are skipped.
+	faction FactionChecker
+}
+
+// FactionChecker reports a player's faction for the human-toolkit exclusion
+// gate (T-800: Symbionts don't build) and the Corrode hostility check
+// (T-801: Symbionts don't corrode fellow Symbionts' beacons).
+type FactionChecker interface {
+	IsSymbiont(ctx context.Context, playerID string) (bool, error)
+}
+
+// WithFaction wires the optional faction gate. Kept off the constructor so
+// existing callers/tests stay unchanged.
+func (s *Service) WithFaction(f FactionChecker) *Service {
+	s.faction = f
+	return s
+}
+
+// forbidSymbiontBuild rejects construction by a Symbiont player. Symbionts
+// are Pure Nomad (symbiont_geo_playstyle.md RED LINE #5) — they never own
+// stationary infrastructure. nil-safe: a missing faction dep never blocks.
+func (s *Service) forbidSymbiontBuild(ctx context.Context, playerID string) error {
+	if s.faction == nil {
+		return nil
+	}
+	isSymbiont, err := s.faction.IsSymbiont(ctx, playerID)
+	if err != nil || !isSymbiont {
+		return nil
+	}
+	return httputil.NewForbidden("symbiont_no_human_toolkit", "симбионт не может строить маяки и Ядро")
+}
+
+// isFellowSymbiont reports whether ownerID is a Symbiont — used by
+// Corrode/CorrodeTower (T-801) to exclude same-faction beacons from
+// "hostile" targeting. Corrode is only ever invoked by a Symbiont attacker
+// (symbiont_geo_playstyle.md §2.3), so a Symbiont-owned beacon is always
+// same-faction, never a valid target. nil-safe / fail-open on error: a
+// missing or errored faction dep never blocks legitimate targeting.
+func (s *Service) isFellowSymbiont(ctx context.Context, ownerID string) bool {
+	if s.faction == nil {
+		return false
+	}
+	isSymbiont, err := s.faction.IsSymbiont(ctx, ownerID)
+	return err == nil && isSymbiont
 }
 
 // EventPublisher pushes a realtime event to a player's SSE stream (R4-6).
@@ -76,6 +121,9 @@ type NetworkHook interface {
 func (s *Service) PlaceAtPlayer(ctx context.Context, playerID string) (*Tower, error) {
 	if s.network == nil {
 		return nil, httputil.NewInternal("placement unavailable")
+	}
+	if err := s.forbidSymbiontBuild(ctx, playerID); err != nil {
+		return nil, err
 	}
 	p, err := s.players.GetByID(ctx, playerID)
 	if err != nil {
@@ -123,6 +171,9 @@ func NewService(towers Repository, cells cell.Repository, players player.Reposit
 // Place creates a new tower at the centre of the given cell (legacy grid
 // path: explicit cell selection by tap). Free placement is PlaceAtPlayer.
 func (s *Service) Place(ctx context.Context, playerID, cellID string) (*Tower, error) {
+	if err := s.forbidSymbiontBuild(ctx, playerID); err != nil {
+		return nil, err
+	}
 	p, err := s.players.GetByID(ctx, playerID)
 	if err != nil {
 		slog.Error("tower place failed: get player", "player_id", playerID, "cell_id", cellID, "error", err)
@@ -599,6 +650,10 @@ type CorrodeResult struct {
 	RemainingHP int    `json:"remaining_hp"`
 	HPMax       int    `json:"hp_max"`
 	Destroyed   bool   `json:"destroyed"`
+	// Level is the struck beacon's level at the moment of the strike (T-803:
+	// lets the caller scale the Symbiont's Resonance reward with how much
+	// energy this beacon actually channels, not a flat amount).
+	Level int `json:"level,omitempty"`
 }
 
 // Corrode is the tower-side effect of the Symbiont "Перегрузить маяк" verb:
@@ -619,6 +674,9 @@ func (s *Service) Corrode(ctx context.Context, lat, lng float64, attackerID stri
 		if t.OwnerID == attackerID {
 			continue // never your own beacons
 		}
+		if s.isFellowSymbiont(ctx, t.OwnerID) {
+			continue // T-801: Symbionts don't corrode fellow Symbionts' beacons
+		}
 		if d := geo.Haversine(lat, lng, t.Lat, t.Lng); d < best {
 			best = d
 			target = t
@@ -637,10 +695,10 @@ func (s *Service) Corrode(ctx context.Context, lat, lng float64, attackerID stri
 			_ = s.push.NotifyTowerUnderAttack(ctx, target.OwnerID, "Симбионт")
 		}
 		s.publishUnderAttack(ctx, target, 0, "symbiont")
-		return &CorrodeResult{Found: true, TowerID: target.ID, RemainingHP: target.HP, HPMax: target.HPMax}, nil
+		return &CorrodeResult{Found: true, TowerID: target.ID, RemainingHP: target.HP, HPMax: target.HPMax, Level: target.Level}, nil
 	}
 	s.destroyTower(ctx, target, "symbiont")
-	return &CorrodeResult{Found: true, TowerID: target.ID, RemainingHP: 0, HPMax: target.HPMax, Destroyed: true}, nil
+	return &CorrodeResult{Found: true, TowerID: target.ID, RemainingHP: 0, HPMax: target.HPMax, Destroyed: true, Level: target.Level}, nil
 }
 
 // CorrodeTower is the autonomous-entity variant of Corrode (R4-2 L2): damage a
@@ -656,6 +714,9 @@ func (s *Service) CorrodeTower(ctx context.Context, towerID, attackerID string, 
 	if t.OwnerID == attackerID {
 		return &CorrodeResult{Found: false}, nil // not hostile (anymore)
 	}
+	if s.isFellowSymbiont(ctx, t.OwnerID) {
+		return &CorrodeResult{Found: false}, nil // T-801: not hostile, same faction
+	}
 	t.HP -= damage
 	if t.HP > 0 {
 		if err := s.towers.Update(ctx, t); err != nil {
@@ -665,10 +726,10 @@ func (s *Service) CorrodeTower(ctx context.Context, towerID, attackerID string, 
 			_ = s.push.NotifyTowerUnderAttack(ctx, t.OwnerID, "Симбионт")
 		}
 		s.publishUnderAttack(ctx, t, 0, "symbiont")
-		return &CorrodeResult{Found: true, TowerID: t.ID, RemainingHP: t.HP, HPMax: t.HPMax}, nil
+		return &CorrodeResult{Found: true, TowerID: t.ID, RemainingHP: t.HP, HPMax: t.HPMax, Level: t.Level}, nil
 	}
 	s.destroyTower(ctx, t, "symbiont")
-	return &CorrodeResult{Found: true, TowerID: t.ID, RemainingHP: 0, HPMax: t.HPMax, Destroyed: true}, nil
+	return &CorrodeResult{Found: true, TowerID: t.ID, RemainingHP: 0, HPMax: t.HPMax, Destroyed: true, Level: t.Level}, nil
 }
 
 // WeakestResult reports the most vulnerable hostile beacon found by a recon scan.
@@ -695,6 +756,9 @@ func (s *Service) WeakestHostile(ctx context.Context, lat, lng float64, attacker
 		t := &towers[i]
 		if t.OwnerID == attackerID {
 			continue
+		}
+		if s.isFellowSymbiont(ctx, t.OwnerID) {
+			continue // T-801: don't scout fellow Symbionts' beacons as targets
 		}
 		frac := 1.0
 		if t.HPMax > 0 {

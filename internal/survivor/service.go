@@ -21,6 +21,15 @@ type Service struct {
 	units   unit.Repository
 	players player.Repository
 	domes   DomeReader
+	// faction gates recruitment to Humans (T-800). nil-safe: without it the
+	// gate is skipped.
+	faction FactionChecker
+}
+
+// FactionChecker reports a player's faction for the human-toolkit exclusion
+// gate (T-800: Symbionts don't recruit an army).
+type FactionChecker interface {
+	IsSymbiont(ctx context.Context, playerID string) (bool, error)
 }
 
 // NewService creates a new survivor service.
@@ -33,6 +42,13 @@ func NewService(units unit.Repository, players player.Repository) *Service {
 // free nearby spawning (tests / no dome data).
 func (s *Service) WithDomes(d DomeReader) *Service {
 	s.domes = d
+	return s
+}
+
+// WithFaction wires the optional faction gate. Kept off the constructor so
+// existing callers/tests stay unchanged.
+func (s *Service) WithFaction(f FactionChecker) *Service {
+	s.faction = f
 	return s
 }
 
@@ -157,6 +173,11 @@ func ensureGuaranteedSurvivors(lat, lng float64, survivors []Survivor, min int) 
 
 // Recruit creates a unit from a survivor. Validates distance from player position.
 func (s *Service) Recruit(ctx context.Context, playerID, survivorType string, sLat, sLng float64) (*unit.Unit, error) {
+	if s.faction != nil {
+		if isSymbiont, err := s.faction.IsSymbiont(ctx, playerID); err == nil && isSymbiont {
+			return nil, httputil.NewForbidden("symbiont_no_human_toolkit", "симбионт не может набирать отряд")
+		}
+	}
 	if survivorType != "fighter" && survivorType != "engineer" {
 		return nil, httputil.NewBadRequest("invalid_type", "type must be fighter or engineer in MVP")
 	}

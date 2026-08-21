@@ -205,3 +205,22 @@ func (r *PgRepository) SeedCandidate(ctx context.Context, minInfection, excludeM
 	}
 	return id, lat, lng, true, nil
 }
+
+// CountOpenSourcesInRadius counts live infection sources (open hives ∪ open
+// rifts) within radiusM of a point — the regional source budget denominator
+// (T-823). Kept off the Repository contract, consumed via an optional interface
+// so test fakes are unaffected.
+func (r *PgRepository) CountOpenSourcesInRadius(ctx context.Context, lat, lng, radiusM float64) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx, `
+		WITH pt AS (SELECT ST_SetSRID(ST_MakePoint($2::float8, $1::float8), 4326)::geography AS g)
+		SELECT
+			(SELECT count(*) FROM hives h, pt WHERE h.closed_at IS NULL AND ST_DWithin(h.geom::geography, pt.g, $3))
+			+ (SELECT count(*) FROM rifts rf JOIN cells rc ON rc.id = rf.cell_id, pt
+				WHERE rf.closed_at IS NULL AND ST_DWithin(rc.geom::geography, pt.g, $3))`,
+		lat, lng, radiusM).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count open sources in radius: %w", err)
+	}
+	return n, nil
+}

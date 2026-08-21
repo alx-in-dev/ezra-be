@@ -192,14 +192,15 @@ func TestRecompute_PerimeterLinks_ClosestParentChain(t *testing.T) {
 }
 
 func TestRecompute_ConnectionRadius_GrowsWithLevel(t *testing.T) {
-	// b1 sits ~166m from the L1 core (reach 250m → connected). b2 sits ~333m
-	// beyond b1: an L1 beacon (reach 200m) cannot pull it, an L3 one
-	// (reach 450m) can — upgrading a frontier beacon extends the network.
+	// b1 sits ~167m from the L1 core (reach 300m → connected). b2 sits ~724m
+	// beyond b1: an L1 beacon (reach 450m) cannot pull it, an L3 one
+	// (reach 1080m) can — upgrading a frontier beacon extends the network.
+	// (BeaconConnRadiusByLevel: Perimeter-proportional rescale, canon/network.go.)
 	nodes := func(b1Level int) []Node {
 		return []Node{
 			{ID: "core", IsCore: true, Lat: 0, Lng: 0, Level: 1},
 			{ID: "b1", Lat: 0.0015, Lng: 0, Level: b1Level},
-			{ID: "b2", Lat: 0.0045, Lng: 0, Level: 1},
+			{ID: "b2", Lat: 0.008, Lng: 0, Level: 1},
 		}
 	}
 

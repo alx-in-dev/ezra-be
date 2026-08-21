@@ -205,8 +205,8 @@ func (s *Service) GetNetwork(ctx context.Context, playerID string) (*State, erro
 // polling can't trigger per-neighbour recompute side effects.
 func (s *Service) RegionFields(ctx context.Context, lat, lng, radiusM float64) ([]FieldDisk, error) {
 	// Expand the scan so a node just outside the view whose disk still reaches
-	// into it is included (largest disk is the Core's).
-	scanR := radiusM + canon.CoreEnergyRadiusM
+	// into it is included (largest possible disk is a level-3 beacon's).
+	scanR := radiusM + canon.MaxEnergyRadiusM
 	players, err := s.repo.PlayersWithNodesInRadius(ctx, lat, lng, scanR)
 	if err != nil {
 		return nil, fmt.Errorf("players in radius: %w", err)
@@ -233,7 +233,7 @@ func (s *Service) RegionFields(ctx context.Context, lat, lng, radiusM float64) (
 			if !powered[n.ID] {
 				continue
 			}
-			rad := canon.NodeEnergyRadius(n.IsCore)
+			rad := canon.NodeEnergyRadius(n.IsCore, n.Level)
 			if geo.Haversine(lat, lng, n.Lat, n.Lng) <= radiusM+rad {
 				disks = append(disks, FieldDisk{Lat: n.Lat, Lng: n.Lng, RadiusM: rad})
 			}
@@ -425,7 +425,7 @@ func (s *Service) recompute(ctx context.Context, playerID string) (*State, error
 		if powered[n.ID] {
 			lngs = append(lngs, n.Lng)
 			lats = append(lats, n.Lat)
-			radii = append(radii, canon.NodeEnergyRadius(n.IsCore))
+			radii = append(radii, canon.NodeEnergyRadius(n.IsCore, n.Level))
 		}
 	}
 	domed := 0
@@ -570,7 +570,7 @@ func nodeStatuses(nodes []Node, powered, brownout map[string]bool, legacy map[st
 			IsCore:      n.IsCore,
 			Powered:     powered != nil && powered[n.ID],
 			Brownout:    brownout != nil && brownout[n.ID],
-			RadiusM:     canon.NodeEnergyRadius(n.IsCore),
+			RadiusM:     canon.NodeEnergyRadius(n.IsCore, n.Level),
 			LegacyState: st,
 		})
 	}

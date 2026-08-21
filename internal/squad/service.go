@@ -42,6 +42,12 @@ type CostSpender interface {
 	Spend(ctx context.Context, playerID string, energy, materials int) (*player.Player, error)
 }
 
+// FactionChecker reports a player's faction for the human-toolkit exclusion
+// gate (T-800: Symbionts don't form or send squads).
+type FactionChecker interface {
+	IsSymbiont(ctx context.Context, playerID string) (bool, error)
+}
+
 // Service handles squad business logic.
 type Service struct {
 	squads    Repository
@@ -51,6 +57,26 @@ type Service struct {
 	push      MissionNotifier
 	positions PositionReader
 	spender   CostSpender
+	faction   FactionChecker
+}
+
+// SetFactionChecker wires the optional faction gate. Kept off the
+// constructor so existing callers/tests stay unchanged.
+func (s *Service) SetFactionChecker(f FactionChecker) {
+	s.faction = f
+}
+
+// forbidSymbiont rejects the human-army toolkit (squads) for Symbiont
+// players (RED LINE #5, symbiont_geo_playstyle.md). nil-safe: without a
+// wired faction dep, the gate is skipped.
+func (s *Service) forbidSymbiont(ctx context.Context, playerID string) error {
+	if s.faction == nil {
+		return nil
+	}
+	if isSymbiont, err := s.faction.IsSymbiont(ctx, playerID); err == nil && isSymbiont {
+		return httputil.NewForbidden("symbiont_no_human_toolkit", "симбионт не может управлять отрядом")
+	}
+	return nil
 }
 
 // SetMissionDeps wires the optional dependencies used to complete timed away
@@ -76,6 +102,9 @@ func NewService(squads Repository, units unit.Repository) *Service {
 
 // Create forms a new squad from the given unit IDs.
 func (s *Service) Create(ctx context.Context, playerID, name string, unitIDs []string) (*Squad, error) {
+	if err := s.forbidSymbiont(ctx, playerID); err != nil {
+		return nil, err
+	}
 	if name == "" {
 		return nil, httputil.NewBadRequest("invalid_name", "squad name is required")
 	}
@@ -157,6 +186,9 @@ func (s *Service) List(ctx context.Context, playerID string) ([]Squad, error) {
 
 // Send dispatches a squad on a mission.
 func (s *Service) Send(ctx context.Context, squadID, playerID, missionType, targetID string) (*Squad, error) {
+	if err := s.forbidSymbiont(ctx, playerID); err != nil {
+		return nil, err
+	}
 	sq, err := s.squads.GetByID(ctx, squadID)
 	if err != nil {
 		return nil, httputil.NewNotFound("squad_not_found", "squad not found")

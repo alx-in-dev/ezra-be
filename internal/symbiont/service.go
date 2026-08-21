@@ -10,8 +10,10 @@ import (
 
 	"github.com/ezra-game/server/internal/canon"
 	"github.com/ezra-game/server/internal/factionwar"
+	"github.com/ezra-game/server/internal/hearth"
 	"github.com/ezra-game/server/internal/player"
 	"github.com/ezra-game/server/internal/roster"
+	"github.com/ezra-game/server/internal/station"
 	"github.com/ezra-game/server/internal/tower"
 	"github.com/ezra-game/server/pkg/httputil"
 )
@@ -44,10 +46,22 @@ const (
 	// to thin the dome. Gated like RaiseInfection (Symbiont + under a foreign
 	// dome). Range is generous so a player standing under a dome reliably has the
 	// source beacon in reach.
-	OverloadEnergyCost   = 30
-	OverloadDamage       = 40
-	OverloadRangeM       = 150
-	ResonancePerOverload = 3
+	OverloadEnergyCost = 30
+	OverloadDamage     = 40
+	OverloadRangeM     = 150
+	// ResonancePerOverloadFloor is the Resonance reward when the struck
+	// beacon's level is unknown (Level=0 — e.g. a legacy/untiered row).
+	// T-803: normally the reward scales with the beacon's actual income rate
+	// via resonanceForOverload, so a fat L5 beacon pays out far more than a
+	// fresh L1 one — Overload reads as "I took what it collected", not a
+	// flat griefing tax (symbiont_geo_playstyle.md §7).
+	ResonancePerOverloadFloor = 3
+
+	// ResonancePerStationSabotage rewards a Rebellion-campaign strike against
+	// a power plant (T-804, symbiont_geo_playstyle.md §8). Flat — plants
+	// aren't level-tiered like beacons — picked mid-tier between the L1
+	// floor and a maxed beacon (provisional; balance T-765-style pass later).
+	ResonancePerStationSabotage = 5
 
 	// Recon action (R4-2 "Разведать слабое место сети"): free intel scan for the
 	// most vulnerable hostile beacon nearby (Symbiont-only, no energy/dome gate).
@@ -99,6 +113,31 @@ type TowerCorroder interface {
 	WeakestHostile(ctx context.Context, lat, lng float64, attackerID string, radiusM int) (*tower.WeakestResult, error)
 }
 
+// PressureReader reports the world-wide count of currently-pierced cells
+// (T-806, symbiont_geo_playstyle.md §10) — the faction's collective,
+// visible goal, distinct from a player's personal Resonance Level.
+type PressureReader interface {
+	PiercedCellCount(ctx context.Context) (int, error)
+}
+
+// HearthBuffChecker reports whether a position is within range of an active
+// Ephemeral Hearth (T-805, symbiont_geo_playstyle.md §9) — a coordinated-raid
+// Overload damage bonus, shared by any Symbiont nearby regardless of who
+// summoned it.
+type HearthBuffChecker interface {
+	Buffed(ctx context.Context, lat, lng float64) (bool, error)
+}
+
+// StationSaboteur forces a hostile power plant's lifecycle one step down
+// (T-804, campaign "Rebellion" — symbiont_geo_playstyle.md §8): the second
+// Overload target type, not tied to a foreign player's dome, so Resonance
+// growth doesn't require human density nearby.
+type StationSaboteur interface {
+	Sabotage(ctx context.Context, lat, lng float64, attackerID string, radiusM int) (*station.SabotageResult, error)
+	// NearestHostile scouts a plant without touching it — Recon's station leg.
+	NearestHostile(ctx context.Context, lat, lng float64, attackerID string, radiusM int) (*station.NearestResult, error)
+}
+
 // EntityManager owns the Symbiont entity roster (R4-2 L2). Implemented by
 // roster.Service; the symbiont service holds the faction gate and HTTP surface.
 type EntityManager interface {
@@ -128,6 +167,9 @@ type Service struct {
 	resources  EnergySpender
 	resonance  ResonanceGranter
 	corroder   TowerCorroder
+	stations   StationSaboteur
+	hearth     HearthBuffChecker
+	pressure   PressureReader
 	xp         ResonanceXPGranter
 	roster     EntityManager
 	onboarding OnboardingBridge
@@ -142,6 +184,37 @@ func NewService(faction FactionChecker, cells DomeCoverage, drainer EnergyDraine
 // WithCorroder wires the tower-corrosion effect for the Overload verb (optional
 // dependency; matches towerSvc.WithStations / battleSvc.SetDiscoverer style).
 func (s *Service) WithCorroder(c TowerCorroder) *Service { s.corroder = c; return s }
+
+// WithStations wires the power-plant sabotage target (T-804, optional). When
+// Overload finds no hostile beacon in range, it falls back to the nearest
+// hostile plant.
+func (s *Service) WithStations(st StationSaboteur) *Service { s.stations = st; return s }
+
+// WithHearth wires the Ephemeral Hearth buff lookup (T-805, optional):
+// Overload does extra damage when the caster is near an active hearth.
+func (s *Service) WithHearth(h HearthBuffChecker) *Service { s.hearth = h; return s }
+
+// WithPressure wires the world-pressure gauge (T-806, optional).
+func (s *Service) WithPressure(p PressureReader) *Service { s.pressure = p; return s }
+
+// PressureResult is the collective, faction-visible "how much dome is
+// currently pierced" gauge (T-806) — not a personal stat.
+type PressureResult struct {
+	PiercedCells int `json:"pierced_cells"`
+}
+
+// Pressure reports the live world-wide pierced-cell count. Open to any
+// caller (not Symbiont-gated) — humans benefit from seeing the pressure too.
+func (s *Service) Pressure(ctx context.Context) (*PressureResult, error) {
+	if s.pressure == nil {
+		return &PressureResult{}, nil
+	}
+	n, err := s.pressure.PiercedCellCount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &PressureResult{PiercedCells: n}, nil
+}
 
 // WithXP wires Resonance XP gain (drives the Resonance Level). Optional.
 func (s *Service) WithXP(x ResonanceXPGranter) *Service { s.xp = x; return s }
@@ -320,6 +393,24 @@ func drainAmount(infection float64) int {
 	return amt
 }
 
+// resonanceForOverload converts a struck beacon's level into the Resonance
+// reward (T-803): the beacon's own canon income rate (energy + materials per
+// hour), so a fat L5 beacon pays out far more than a fresh L1 one — Overload
+// reads as "I took what it collected", not a flat griefing tax
+// (symbiont_geo_playstyle.md §7). Falls back to ResonancePerOverloadFloor for
+// an unknown/untiered level (e.g. a non-tower target).
+func resonanceForOverload(level int) int {
+	cfg, ok := canon.TowerLevelSpecs[level]
+	if !ok {
+		return ResonancePerOverloadFloor
+	}
+	r := cfg.EnergyPerHour + cfg.MaterialsPerHour
+	if r < ResonancePerOverloadFloor {
+		return ResonancePerOverloadFloor
+	}
+	return r
+}
+
 // Evaluate reports the player's under-dome status and applies soft-drain (once
 // per throttle interval). Non-Symbionts short-circuit cheaply.
 func (s *Service) Evaluate(ctx context.Context, playerID string, lat, lng float64) (*Status, error) {
@@ -415,19 +506,37 @@ func (s *Service) RaiseInfection(ctx context.Context, playerID string, lat, lng 
 	return &RaiseResult{CellInfection: inf, Resonance: res, Pierced: pierced}, nil
 }
 
-// OverloadResult is returned after the Overload (corrode-beacon) verb.
+// OverloadResult is returned after the Overload (corrode-beacon /
+// sabotage-station) verb.
 type OverloadResult struct {
-	Found       bool `json:"found"`        // a hostile beacon was in range
-	Destroyed   bool `json:"destroyed"`    // the strike dropped it to 0 HP
-	RemainingHP int  `json:"remaining_hp"` // beacon HP after the hit (0 if destroyed)
+	Found       bool `json:"found"`        // a hostile target was in range
+	Destroyed   bool `json:"destroyed"`    // beacon: strike dropped it to 0 HP; station: strike ruined it
+	RemainingHP int  `json:"remaining_hp"` // beacon HP after the hit (0 if destroyed); unset for a station
 	Resonance   int  `json:"resonance"`    // portable Resonance after the gain
+	// EnergySiphoned is this strike's Resonance delta (T-803): scales with
+	// the struck beacon's level — client copy reads "energy taken: +N", not
+	// "damage dealt", per symbiont_geo_playstyle.md §7 (Overload is theft,
+	// not griefing).
+	EnergySiphoned int `json:"energy_siphoned,omitempty"`
+	// TargetKind distinguishes what was hit ("beacon" or "station", T-804) —
+	// client copy/iconography differs (beacon: "маяк перегружен"; station:
+	// "станция саботирована").
+	TargetKind string `json:"target_kind,omitempty"`
+	// HearthBuffed reports whether an active Ephemeral Hearth (T-805) boosted
+	// this strike's damage — client copy can call out the coordinated-raid bonus.
+	HearthBuffed bool `json:"hearth_buffed,omitempty"`
 }
 
-// Overload is the Symbiont's "Перегрузить маяк" verb (R4-2): corrode the nearest
-// hostile beacon's HP, sabotaging enemy infrastructure to thin the dome around
-// home. GATED action×covered_by_dome — Symbiont-only and ONLY under a foreign
-// dome (the techno toolkit is for enemy infrastructure, never players). Costs
-// energy; a hit feeds portable Resonance.
+// Overload is the Symbiont's "Перегрузить маяк" verb (R4-2), extended by the
+// Rebellion campaign (T-804) to a second target type. Primary target: the
+// nearest hostile beacon's HP, GATED to standing under a foreign dome (the
+// techno toolkit is for enemy infrastructure, never players). When no beacon
+// is found — including when the player isn't under any foreign dome at all —
+// it falls back to the nearest hostile power plant, forcing its lifecycle
+// down a step. The station fallback needs no dome nearby: Resonance growth
+// shouldn't be geo-locked to human density (symbiont_geo_playstyle.md §8,
+// closes gameplay_review.md P2#18). Costs energy once per attempt; a hit
+// feeds portable Resonance.
 func (s *Service) Overload(ctx context.Context, playerID string, lat, lng float64) (*OverloadResult, error) {
 	sym, err := s.faction.IsSymbiont(ctx, playerID)
 	if err != nil {
@@ -436,7 +545,7 @@ func (s *Service) Overload(ctx context.Context, playerID string, lat, lng float6
 	if !sym {
 		return nil, httputil.NewForbidden("not_symbiont", "доступно только Симбионтам")
 	}
-	if s.corroder == nil {
+	if s.corroder == nil && s.stations == nil {
 		return nil, httputil.NewBadRequest("unavailable", "перегрузка недоступна")
 	}
 	lat, lng = s.serverPosition(ctx, playerID, lat, lng)
@@ -444,7 +553,9 @@ func (s *Service) Overload(ctx context.Context, playerID string, lat, lng float6
 	if err != nil {
 		return nil, err
 	}
-	if !covered {
+	if !covered && s.stations == nil {
+		// No dome-gated beacon target possible here, and no Rebellion-campaign
+		// fallback wired — nothing this verb can do at this position.
 		return nil, httputil.NewBadRequest("not_under_dome", "перегружать маяк можно только под чужим куполом")
 	}
 	if s.resources != nil {
@@ -452,40 +563,77 @@ func (s *Service) Overload(ctx context.Context, playerID string, lat, lng float6
 			return nil, err
 		}
 	}
-	// L5: an assigned Сущность искажения lends extra corrosion to the strike.
-	damage := OverloadDamage + s.verbBonus(ctx, playerID).OverloadDamage
-	cr, err := s.corroder.Corrode(ctx, lat, lng, playerID, damage, OverloadRangeM)
-	if err != nil {
-		return nil, err
-	}
-	out := &OverloadResult{Found: cr.Found, Destroyed: cr.Destroyed, RemainingHP: cr.RemainingHP}
-	if cr.Found {
-		if s.resonance != nil {
-			if r, rErr := s.resonance.AddSymbiontResonance(ctx, playerID, ResonancePerOverload); rErr == nil {
-				out.Resonance = r
+
+	out := &OverloadResult{}
+	if covered && s.corroder != nil {
+		// L5: an assigned Сущность искажения lends extra corrosion to the strike.
+		damage := OverloadDamage + s.verbBonus(ctx, playerID).OverloadDamage
+		// T-805: a coordinated raid near an active Ephemeral Hearth hits harder.
+		if s.hearth != nil {
+			if buffed, hErr := s.hearth.Buffed(ctx, lat, lng); hErr == nil && buffed {
+				damage += hearth.DamageBonus
+				out.HearthBuffed = true
 			}
 		}
-		s.grantXP(ctx, playerID, RXPPerOverload)
-		// E2: a landed Overload is a Symbiont war feat (canon +20). Best-effort.
-		if s.war != nil {
-			_ = s.war.AwardSymbiont(ctx, playerID, factionwar.PointsOverloadBeacon)
+		cr, err := s.corroder.Corrode(ctx, lat, lng, playerID, damage, OverloadRangeM)
+		if err != nil {
+			return nil, err
+		}
+		if cr.Found {
+			out.Found, out.Destroyed, out.RemainingHP, out.TargetKind = true, cr.Destroyed, cr.RemainingHP, "beacon"
+			s.rewardOverload(ctx, playerID, resonanceForOverload(cr.Level), out)
+		}
+	}
+	if !out.Found && s.stations != nil {
+		sr, err := s.stations.Sabotage(ctx, lat, lng, playerID, OverloadRangeM)
+		if err != nil {
+			return nil, err
+		}
+		if sr.Found {
+			out.Found, out.Destroyed, out.TargetKind = true, sr.Ruined, "station"
+			s.rewardOverload(ctx, playerID, ResonancePerStationSabotage, out)
 		}
 	}
 	return out, nil
+}
+
+// rewardOverload grants the Resonance/RXP/war-score payout shared by both
+// Overload target types (beacon via Corrode, station via Sabotage — T-804).
+func (s *Service) rewardOverload(ctx context.Context, playerID string, resonanceDelta int, out *OverloadResult) {
+	if s.resonance != nil {
+		if r, rErr := s.resonance.AddSymbiontResonance(ctx, playerID, resonanceDelta); rErr == nil {
+			out.Resonance = r
+			out.EnergySiphoned = resonanceDelta
+		}
+	}
+	s.grantXP(ctx, playerID, RXPPerOverload)
+	// E2: a landed Overload feat (either target type) scores Symbiont war
+	// points (canon +20). Best-effort.
+	if s.war != nil {
+		_ = s.war.AwardSymbiont(ctx, playerID, factionwar.PointsOverloadBeacon)
+	}
 }
 
 // ReconResult is returned after the Recon (scout-weak-node) verb.
 type ReconResult struct {
 	Found     bool `json:"found"`
 	DistanceM int  `json:"distance_m"`
-	HP        int  `json:"hp"`
+	HP        int  `json:"hp"` // beacon only; unset for a scouted station
 	HPMax     int  `json:"hp_max"`
+	// TargetKind distinguishes what was scouted ("beacon" or "station",
+	// T-804) — mirrors OverloadResult.TargetKind.
+	TargetKind string `json:"target_kind,omitempty"`
+	// State is the scouted station's lifecycle state; unset for a beacon.
+	State string `json:"state,omitempty"`
 }
 
 // Recon is the Symbiont's "Разведать слабое место сети" verb (R4-2): a free
 // intel scan that surfaces the nearest most-vulnerable hostile beacon (lowest HP
-// fraction), so the player knows where Overload bites hardest. Symbiont-only;
-// no energy cost, no dome gate (scouting is how you find the dome's weak point).
+// fraction), so the player knows where Overload bites hardest. Extended by
+// T-804 to fall back to the nearest hostile power plant when no beacon is
+// found — the Rebellion-campaign target Overload itself already accepts.
+// Symbiont-only; no energy cost, no dome gate (scouting is how you find the
+// weak point, wherever it is).
 func (s *Service) Recon(ctx context.Context, playerID string, lat, lng float64) (*ReconResult, error) {
 	sym, err := s.faction.IsSymbiont(ctx, playerID)
 	if err != nil {
@@ -494,15 +642,30 @@ func (s *Service) Recon(ctx context.Context, playerID string, lat, lng float64) 
 	if !sym {
 		return nil, httputil.NewForbidden("not_symbiont", "доступно только Симбионтам")
 	}
-	if s.corroder == nil {
+	if s.corroder == nil && s.stations == nil {
 		return nil, httputil.NewBadRequest("unavailable", "разведка недоступна")
 	}
 	lat, lng = s.serverPosition(ctx, playerID, lat, lng)
 	// L5: an assigned Следящая сущность widens the scan radius.
 	rangeM := ReconRangeM + s.verbBonus(ctx, playerID).ReconRangeM
-	w, err := s.corroder.WeakestHostile(ctx, lat, lng, playerID, rangeM)
-	if err != nil {
-		return nil, err
+
+	if s.corroder != nil {
+		w, err := s.corroder.WeakestHostile(ctx, lat, lng, playerID, rangeM)
+		if err != nil {
+			return nil, err
+		}
+		if w.Found {
+			return &ReconResult{Found: true, DistanceM: w.DistanceM, HP: w.HP, HPMax: w.HPMax, TargetKind: "beacon"}, nil
+		}
 	}
-	return &ReconResult{Found: w.Found, DistanceM: w.DistanceM, HP: w.HP, HPMax: w.HPMax}, nil
+	if s.stations != nil {
+		st, err := s.stations.NearestHostile(ctx, lat, lng, playerID, rangeM)
+		if err != nil {
+			return nil, err
+		}
+		if st.Found {
+			return &ReconResult{Found: true, DistanceM: st.DistanceM, TargetKind: "station", State: st.State}, nil
+		}
+	}
+	return &ReconResult{Found: false}, nil
 }

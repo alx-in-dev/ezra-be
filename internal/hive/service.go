@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/ezra-game/server/internal/canon"
 	"github.com/ezra-game/server/internal/player"
 	"github.com/ezra-game/server/internal/rift"
 	"github.com/ezra-game/server/pkg/httputil"
@@ -111,6 +112,29 @@ func (s *Service) Empower(ctx context.Context, playerID, hiveID string) (*Hive, 
 	return h, nil
 }
 
+// sourceCounter counts live infection sources (hives ∪ open rifts) in a region
+// disk (T-823). Optional: a repo without it (test fakes) leaves seeding
+// ungated, matching the codebase's optional-interface pattern.
+type sourceCounter interface {
+	CountOpenSourcesInRadius(ctx context.Context, lat, lng, radiusM float64) (int, error)
+}
+
+// regionAtSourceBudget reports whether the region around (lat,lng) already holds
+// the regional source budget. Fails open (returns false) when the repo can't
+// count or errors — the world keeps seeding rather than freezing on a glitch.
+func (s *Service) regionAtSourceBudget(ctx context.Context, lat, lng float64) bool {
+	counter, ok := s.hives.(sourceCounter)
+	if !ok {
+		return false
+	}
+	n, err := counter.CountOpenSourcesInRadius(ctx, lat, lng, canon.SourceRegionRadiusM)
+	if err != nil {
+		slog.Warn("hive seed: source budget count failed", "error", err)
+		return false
+	}
+	return n >= canon.SourceBudgetPerRegion
+}
+
 // GetNearby returns open hives near a point (for the client map).
 func (s *Service) GetNearby(ctx context.Context, lat, lng, radiusM float64) ([]Hive, error) {
 	return s.hives.GetNearby(ctx, lat, lng, radiusM)
@@ -191,6 +215,13 @@ func (s *Service) maybeSeed(ctx context.Context) {
 		return
 	}
 	if !ok {
+		return
+	}
+	// T-823 regional source budget: a new hive counts against the combined
+	// per-region cap (hives ∪ open rifts). maxOpenHives above bounds hives
+	// globally; this bounds the whole source set locally so a region already
+	// dense with rifts doesn't sprout more sources.
+	if s.regionAtSourceBudget(ctx, lat, lng) {
 		return
 	}
 	h := &Hive{CellID: cellID, Lat: lat, Lng: lng, Level: 1, Intensity: 100}

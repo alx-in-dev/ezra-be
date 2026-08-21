@@ -19,6 +19,12 @@ const (
 const (
 	maxRadiusCells = 15
 	maxIntensity   = 100 // = canon.RiftAmplifyCap
+	// maxGrowingRifts caps how many open rifts expand in a single tick (T-827,
+	// N0 §6: ~60 simultaneously-growing rifts/region). The regional source
+	// budget (T-823) already bounds open rifts to ~60/region, so in the single-
+	// region world this never truncates; it's a safety belt against a heavy
+	// expand sweep. Overflow (a warning below) waits for the next tick.
+	maxGrowingRifts = 60
 )
 
 type Worker struct {
@@ -45,6 +51,12 @@ func (w *Worker) HandleExpand(ctx context.Context, _ *asynq.Task) error {
 	openRifts, err := w.service.rifts.GetOpen(ctx)
 	if err != nil {
 		return err
+	}
+
+	// T-827: cap simultaneously-growing rifts. Overflow waits for the next tick.
+	if len(openRifts) > maxGrowingRifts {
+		slog.Warn("rift expand: growing-rift cap hit", "open", len(openRifts), "cap", maxGrowingRifts)
+		openRifts = openRifts[:maxGrowingRifts]
 	}
 
 	cellsTouched := 0
@@ -129,6 +141,16 @@ func (w *Worker) HandleSpawnOrganic(ctx context.Context, _ *asynq.Task) error {
 	}
 	if spawned > 0 {
 		slog.Info("organic rift spawn", "spawned", spawned)
+	}
+	// T-823 floor: reignite regions with live players but no sources (localized
+	// worlds have no infection≥75 cells for organic spawn to catch).
+	floored, err := w.service.EnsureFloorSources(ctx)
+	if err != nil {
+		slog.Warn("rift floor pass failed", "error", err)
+		return nil
+	}
+	if floored > 0 {
+		slog.Info("rift floor spawn", "spawned", floored)
 	}
 	return nil
 }

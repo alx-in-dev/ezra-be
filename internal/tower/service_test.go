@@ -766,3 +766,115 @@ func TestRepair_AllyMayRepairLinkedBeacon(t *testing.T) {
 	_, err = svc2.Repair(ctx, "tw-1", "stranger")
 	assertAppErrorCode(t, err, "not_owner")
 }
+
+// fakeFaction is a stub FactionChecker (T-800/T-801). Players listed in
+// symbionts are Symbiont; everyone else is Human.
+type fakeFaction struct{ symbionts map[string]bool }
+
+func (f fakeFaction) IsSymbiont(_ context.Context, playerID string) (bool, error) {
+	return f.symbionts[playerID], nil
+}
+
+// fakeNetworkHook is a NetworkHook stub that fails the test if called — used
+// to prove the T-800 gate short-circuits PlaceAtPlayer before touching it.
+type fakeNetworkHook struct{ t *testing.T }
+
+func (f fakeNetworkHook) Recompute(context.Context, string) error {
+	f.t.Fatal("unexpected call")
+	return nil
+}
+func (f fakeNetworkHook) CanConnect(context.Context, string, float64, float64) (bool, bool, error) {
+	f.t.Fatal("unexpected call")
+	return false, false, nil
+}
+func (f fakeNetworkHook) NearestCellID(context.Context, float64, float64) (string, error) {
+	f.t.Fatal("unexpected call")
+	return "", nil
+}
+
+func TestPlace_RejectsSymbiont(t *testing.T) {
+	svc, _, _, _, _, _ := setupService()
+	svc.WithFaction(fakeFaction{symbionts: map[string]bool{"sym-1": true}})
+	ctx := context.Background()
+
+	_, err := svc.Place(ctx, "sym-1", "cell-1")
+
+	assertAppErrorCode(t, err, "symbiont_no_human_toolkit")
+}
+
+func TestPlaceAtPlayer_RejectsSymbiont(t *testing.T) {
+	svc, _, _, _, _, _ := setupService()
+	svc.WithFaction(fakeFaction{symbionts: map[string]bool{"sym-1": true}})
+	svc.WithNetwork(fakeNetworkHook{t: t}) // must not be reached
+	ctx := context.Background()
+
+	_, err := svc.PlaceAtPlayer(ctx, "sym-1")
+
+	assertAppErrorCode(t, err, "symbiont_no_human_toolkit")
+}
+
+func TestPlace_HumanNotBlockedByFactionGate(t *testing.T) {
+	svc, towerRepo, cellRepo, playerRepo, questProgressor, pushNotifier := setupService()
+	svc.WithFaction(fakeFaction{symbionts: map[string]bool{"sym-1": true}}) // player-1 is Human
+	ctx := context.Background()
+	p := defaultPlayer()
+	c := defaultCell()
+
+	playerRepo.On("GetByID", ctx, "player-1").Return(p, nil)
+	cellRepo.On("GetByID", ctx, "cell-1").Return(c, nil)
+	towerRepo.On("CountAllInRadius", ctx, c.Lat, c.Lng, canon.NetworkMinSpacingM).Return(0, nil)
+	towerRepo.On("CountAllInRadius", ctx, c.Lat, c.Lng, canon.TowerOverloadRadiusM).Return(2, nil)
+	playerRepo.On("Update", ctx, mock.AnythingOfType("*player.Player")).Return(nil)
+	towerRepo.On("Create", ctx, mock.AnythingOfType("*tower.Tower")).Return(nil)
+	cellRepo.On("SetTowerID", ctx, "cell-1", mock.AnythingOfType("*string")).Return(nil)
+	questProgressor.On("UpdateProgress", ctx, "player-1", "place_beacon").Return(nil)
+	pushNotifier.On("NotifyTowerPlaced", ctx, "player-1").Return(nil)
+
+	_, err := svc.Place(ctx, "player-1", "cell-1")
+
+	assert.NoError(t, err)
+}
+
+func TestCorrode_SkipsFellowSymbiontBeacon(t *testing.T) {
+	svc, towerRepo, _, _, _, _ := setupService()
+	svc.WithFaction(fakeFaction{symbionts: map[string]bool{"sym-2": true}})
+	ctx := context.Background()
+
+	// sym-2's beacon is the only one in radius, but it's a fellow Symbiont's —
+	// not a valid Overload target (T-801).
+	fellow := Tower{ID: "tw-fellow", OwnerID: "sym-2", HP: 100, HPMax: 100, Lat: 53.1, Lng: 50.1}
+	towerRepo.On("GetInRadius", ctx, 53.1, 50.1, 150.0).Return([]Tower{fellow}, nil)
+
+	res, err := svc.Corrode(ctx, 53.1, 50.1, "sym-1", 25, 150)
+
+	assert.NoError(t, err)
+	assert.False(t, res.Found)
+}
+
+func TestWeakestHostile_SkipsFellowSymbiontBeacon(t *testing.T) {
+	svc, towerRepo, _, _, _, _ := setupService()
+	svc.WithFaction(fakeFaction{symbionts: map[string]bool{"sym-2": true}})
+	ctx := context.Background()
+
+	fellow := Tower{ID: "tw-fellow", OwnerID: "sym-2", HP: 10, HPMax: 100, Lat: 53.1, Lng: 50.1}
+	towerRepo.On("GetInRadius", ctx, 53.1, 50.1, 300.0).Return([]Tower{fellow}, nil)
+
+	res, err := svc.WeakestHostile(ctx, 53.1, 50.1, "sym-1", 300)
+
+	assert.NoError(t, err)
+	assert.False(t, res.Found)
+}
+
+func TestCorrodeTower_SkipsFellowSymbiontBeacon(t *testing.T) {
+	svc, towerRepo, _, _, _, _ := setupService()
+	svc.WithFaction(fakeFaction{symbionts: map[string]bool{"sym-2": true}})
+	ctx := context.Background()
+
+	fellow := &Tower{ID: "tw-fellow", OwnerID: "sym-2", HP: 100, HPMax: 100}
+	towerRepo.On("GetByID", ctx, "tw-fellow").Return(fellow, nil)
+
+	res, err := svc.CorrodeTower(ctx, "tw-fellow", "sym-1", 25)
+
+	assert.NoError(t, err)
+	assert.False(t, res.Found)
+}

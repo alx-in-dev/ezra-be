@@ -175,6 +175,22 @@ type Service struct {
 	quests      interface {
 		UpdateProgress(ctx context.Context, playerID, eventType string) error
 	}
+	// factionCheck gates battle entry to Humans (T-800). nil-safe: without it
+	// the gate is skipped. Distinct from faction (FactionScorer, which awards
+	// war points and stays even for Symbionts' own scoring path).
+	factionCheck FactionChecker
+}
+
+// FactionChecker reports a player's faction for the human-toolkit exclusion
+// gate (T-800: Symbionts don't fight normal PvE battles).
+type FactionChecker interface {
+	IsSymbiont(ctx context.Context, playerID string) (bool, error)
+}
+
+// SetFactionChecker wires the optional faction gate. Kept off the
+// constructor so existing callers/tests stay unchanged.
+func (s *Service) SetFactionChecker(f FactionChecker) {
+	s.factionCheck = f
 }
 
 // SetRiftLimiter wires the optional daily rift-closure cap (anti-inflation).
@@ -264,6 +280,11 @@ func NewService(battles Repository, rifts RiftProvider, squads SquadProvider, re
 
 // Start initiates a new battle for a player's squad against a target.
 func (s *Service) Start(ctx context.Context, playerID, squadID, targetType, targetID string) (*Battle, error) {
+	if s.factionCheck != nil {
+		if isSymbiont, err := s.factionCheck.IsSymbiont(ctx, playerID); err == nil && isSymbiont {
+			return nil, httputil.NewForbidden("symbiont_no_human_toolkit", "симбионт не может вести обычный бой")
+		}
+	}
 	// Validate squad ownership
 	ownerID, err := s.squads.GetSquadOwner(ctx, squadID)
 	if err != nil {

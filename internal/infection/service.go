@@ -26,6 +26,13 @@ const (
 	// Mirrors spire.SuppressionPerHour (kept local to avoid an import cycle).
 	spireSuppressionPerHour = 1.5
 
+	// Hive zone radii by level, mirrored from hive.Config (hive/model.go:31-33)
+	// to avoid an import cycle. T-820 localization: ambient growth fires only
+	// within a source's reach, and a hive's reach is its own zone radius.
+	hiveRadiusL1 = 200.0
+	hiveRadiusL2 = 350.0
+	hiveRadiusL3 = 500.0
+
 	// D2 antagonist tide (directed infection advance toward player beacons).
 	tideStepPerTick       = 6.0   // infection points added to an advancing cell per tick
 	tideAdvanceCeiling    = 90.0  // only push cells below this (criticals still form via rifts)

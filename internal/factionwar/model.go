@@ -38,16 +38,26 @@ func SeasonFor(t time.Time) string {
 }
 
 // RegionBalance is the live Human-vs-Symbiont control of a region.
+//
+// N1 scoring (T-822): control is measured by PROJECTED TERRITORY, not ambient
+// infection. Human side = domed cells (its "aura") minus Symbiont-pierced holes;
+// Symbiont side = source-aura cells (hives ∪ open rifts) plus pierced cells,
+// deduped. Neutral cells (neither) count for nobody, so localizing the world
+// (zeroing ambient infection) doesn't instantly recolor a Symbiont region human.
+// The ambient counts below (clean/infected) are kept only as diagnostics.
 type RegionBalance struct {
-	HumanRaw     int `json:"human_raw"`
-	SymbiontRaw  int `json:"symbiont_raw"`
-	HumanPct     int `json:"human_pct"`
-	SymbiontPct  int `json:"symbiont_pct"`
-	DomedCells   int `json:"domed_cells"`
-	CleanCells   int `json:"clean_cells"`
-	InfectedCells int `json:"infected_cells"`
-	OpenHives    int `json:"open_hives"`
-	OpenRifts    int `json:"open_rifts"`
+	HumanRaw      int `json:"human_raw"`
+	SymbiontRaw   int `json:"symbiont_raw"`
+	HumanPct      int `json:"human_pct"`
+	SymbiontPct   int `json:"symbiont_pct"`
+	DomedCells    int `json:"domed_cells"`
+	CleanCells    int `json:"clean_cells"`    // diagnostic (ambient), not scored in N1
+	InfectedCells int `json:"infected_cells"` // diagnostic (ambient), not scored in N1
+	OpenHives     int `json:"open_hives"`
+	OpenRifts     int `json:"open_rifts"`
+	// N1 territory measures.
+	AuraCells    int `json:"aura_cells"`    // cells inside a source aura (hive/rift)
+	PiercedCells int `json:"pierced_cells"` // cells currently pierced by a Symbiont
 }
 
 // Standing is one player's place on the season leaderboard.

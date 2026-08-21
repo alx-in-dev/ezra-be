@@ -21,6 +21,7 @@ import (
 	"github.com/ezra-game/server/internal/citylink"
 	"github.com/ezra-game/server/internal/faction"
 	"github.com/ezra-game/server/internal/factionwar"
+	"github.com/ezra-game/server/internal/hearth"
 	"github.com/ezra-game/server/internal/hive"
 	"github.com/ezra-game/server/internal/infection"
 	"github.com/ezra-game/server/internal/item"
@@ -154,6 +155,11 @@ func main() {
 	stationWorker := station.NewWorker(stationSvc)
 	towerSvc.WithStations(stationRepo) // station bonus feeds beacon-area capacity
 
+	// Ephemeral Hearth (T-805): Symbiont muster point for a coordinated raid.
+	hearthRepo := hearth.NewPgRepository(db)
+	hearthSvc := hearth.NewService(hearthRepo)
+	hearthHandler := hearth.NewHandler(hearthSvc)
+
 	// Rifts
 	riftRepo := rift.NewPgRepository(db)
 	riftSvc := rift.NewService(riftRepo, cellRepo, pushSvc)
@@ -216,10 +222,19 @@ func main() {
 	// E2: side-gate war points (a Symbiont closing rifts must not farm the
 	// Human leaderboard) — wired late because factionRepo is created here.
 	factionWarSvc.SetFactionReader(factionRepo)
+	// T-800: Symbionts don't get the human toolkit (build/army/battle) — wired
+	// late because factionSvc is created here, after these services.
+	towerSvc.WithFaction(factionSvc)
+	squadSvc.SetFactionChecker(factionSvc)
+	stationSvc.WithFaction(factionSvc)
+	hearthSvc.WithFaction(factionSvc) // T-805: Summon is Symbiont-only
 
 	// #6 T-760/T-761: Symbiont under-dome status + soft-drain.
 	symbiontSvc := symbiont.NewService(factionSvc, cellRepo, playerRepo, resourceSvc, playerRepo)
 	symbiontSvc.WithCorroder(towerSvc)    // R4-2: "Перегрузить маяк" corrodes hostile beacons
+	symbiontSvc.WithStations(stationSvc)  // T-804: Overload falls back to sabotaging a power plant
+	symbiontSvc.WithHearth(hearthSvc)     // T-805: coordinated-raid Overload damage bonus
+	symbiontSvc.WithPressure(cellRepo)    // T-806: world-wide pierced-cell gauge
 	symbiontSvc.WithXP(playerRepo)        // R4-2: verbs feed Resonance XP (drives Resonance Level)
 	symbiontSvc.WithWar(factionWarSvc)    // E2: Overload scores Symbiont war points
 	symbiontSvc.WithPositions(playerRepo) // anti-spoof: verbs/drain use the server-side position
@@ -245,6 +260,7 @@ func main() {
 	battleSvc.SetFactionContacter(factionSvc)                 // E3: hive collapse = Contact (unlocks side choice)
 	battleSvc.SetDiscoverer(bestiarySvc)                      // T-660: engaging logs spirit/rift types to the bestiary
 	battleSvc.SetRiftLimiter(battle.NewRedisRiftLimiter(rdb)) // anti-inflation: daily rift-closure cap by tier (docs/06 §6.3)
+	battleSvc.SetFactionChecker(factionSvc)                   // T-800: Symbionts don't fight normal PvE battles
 	battleHandler := battle.NewHandler(battleSvc)
 
 	// Pets
@@ -281,7 +297,8 @@ func main() {
 
 	// Survivors
 	survivorSvc := survivor.NewService(unitRepo, playerRepo).
-		WithDomes(survivor.NewPgDomeReader(db))
+		WithDomes(survivor.NewPgDomeReader(db)).
+		WithFaction(factionSvc) // T-800: Symbionts don't recruit an army
 	survivorHandler := survivor.NewHandler(survivorSvc)
 
 	// Shop (T-540: register catalog/buy/crystals/subscription routes)
@@ -330,11 +347,18 @@ func main() {
 
 	// Asynq scheduler (infection recalculation every 5 minutes)
 	asynqScheduler := platform.NewAsynqScheduler(cfg.RedisURL)
-	if _, err := asynqScheduler.Register("@every 5m", infection.NewRecalculateTask()); err != nil {
+	// T-827: Unique dedups overlapping recalcs — two concurrent BatchRecalculate
+	// ticks deadlocked (40P01) in the N0 stress. The lock releases when a tick
+	// finishes; a still-running tick makes the next @5m enqueue skip (logged as
+	// an expected "task already exists" enqueue error, not a failure).
+	if _, err := asynqScheduler.Register("@every 5m", infection.NewRecalculateTask(), asynq.Unique(5*time.Minute)); err != nil {
 		slog.Error("asynq scheduler register failed", "error", err)
 		os.Exit(1)
 	}
-	if _, err := asynqScheduler.Register("@every 1h", rift.NewExpandTask()); err != nil {
+	// T-827: the @1h heavies fire on distinct minute offsets (non-multiples of 5,
+	// so they miss the @5m recalc too) to avoid the co-fire that stacked heavy DB
+	// writers and produced the N0 deadlock.
+	if _, err := asynqScheduler.Register("7 * * * *", rift.NewExpandTask()); err != nil {
 		slog.Error("asynq scheduler register rift:expand failed", "error", err)
 		os.Exit(1)
 	}
@@ -349,7 +373,7 @@ func main() {
 		os.Exit(1)
 	}
 	// E1: the Symbiont hive lifecycle (pulse infection, seed rifts, grow) hourly.
-	if _, err := asynqScheduler.Register("@every 1h", hive.NewPulseTask()); err != nil {
+	if _, err := asynqScheduler.Register("23 * * * *", hive.NewPulseTask()); err != nil {
 		slog.Error("asynq scheduler register hive:pulse failed", "error", err)
 		os.Exit(1)
 	}
@@ -368,11 +392,11 @@ func main() {
 		slog.Error("asynq scheduler register station:lifecycle failed", "error", err)
 		os.Exit(1)
 	}
-	if _, err := asynqScheduler.Register("@every 1h", tower.NewAccruePassiveIncomeTask()); err != nil {
+	if _, err := asynqScheduler.Register("37 * * * *", tower.NewAccruePassiveIncomeTask()); err != nil {
 		slog.Error("asynq scheduler register tower:accrue_passive_income failed", "error", err)
 		os.Exit(1)
 	}
-	if _, err := asynqScheduler.Register("@every 1h", tower.NewPressureTask()); err != nil {
+	if _, err := asynqScheduler.Register("49 * * * *", tower.NewPressureTask()); err != nil {
 		slog.Error("asynq scheduler register tower:pressure_tick failed", "error", err)
 		os.Exit(1)
 	}
@@ -403,7 +427,7 @@ func main() {
 		slog.Error("asynq scheduler register symbiont:drain_tick failed", "error", err)
 		os.Exit(1)
 	}
-	if _, err := asynqScheduler.Register("@every 1h", legacy.NewDegradeTask()); err != nil {
+	if _, err := asynqScheduler.Register("53 * * * *", legacy.NewDegradeTask()); err != nil {
 		slog.Error("asynq scheduler register legacy:degrade failed", "error", err)
 		os.Exit(1)
 	}
@@ -452,6 +476,8 @@ func main() {
 			r.Post("/symbiont/raise", symbiontHandler.Raise)
 			r.Post("/symbiont/overload", symbiontHandler.Overload)
 			r.Get("/symbiont/recon", symbiontHandler.Recon)
+			r.Post("/symbiont/hearth", hearthHandler.Summon)
+			r.Get("/symbiont/pressure", symbiontHandler.Pressure)
 			r.Get("/symbiont/entities", symbiontHandler.Entities)
 			r.Post("/symbiont/entities/assign", symbiontHandler.AssignEntity)
 			r.Post("/symbiont/entities/recall", symbiontHandler.RecallEntity)

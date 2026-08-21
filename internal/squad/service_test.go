@@ -340,3 +340,40 @@ func TestCreate_RejectsBusyUnit(t *testing.T) {
 	assert.ErrorAs(t, err, &appErr)
 	assert.Equal(t, "unit_busy", appErr.Code)
 }
+
+// fakeFaction is a stub FactionChecker (T-800).
+type fakeFaction struct{ symbionts map[string]bool }
+
+func (f fakeFaction) IsSymbiont(_ context.Context, playerID string) (bool, error) {
+	return f.symbionts[playerID], nil
+}
+
+func TestCreate_RejectsSymbiont(t *testing.T) {
+	repo := &mockSquadRepo{}
+	units := &mockUnitRepo{}
+	svc := NewService(repo, units)
+	svc.SetFactionChecker(fakeFaction{symbionts: map[string]bool{"sym-1": true}})
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, "sym-1", "Alpha", []string{"u1"})
+
+	var appErr *httputil.AppError
+	assert.ErrorAs(t, err, &appErr)
+	assert.Equal(t, "symbiont_no_human_toolkit", appErr.Code)
+	units.AssertNotCalled(t, "GetByID", mock.Anything, mock.Anything)
+}
+
+func TestSend_RejectsSymbiont(t *testing.T) {
+	repo := &mockSquadRepo{}
+	units := &mockUnitRepo{}
+	svc := NewService(repo, units)
+	svc.SetFactionChecker(fakeFaction{symbionts: map[string]bool{"sym-1": true}})
+	ctx := context.Background()
+
+	_, err := svc.Send(ctx, "sq-1", "sym-1", "patrol", "cell-1")
+
+	var appErr *httputil.AppError
+	assert.ErrorAs(t, err, &appErr)
+	assert.Equal(t, "symbiont_no_human_toolkit", appErr.Code)
+	repo.AssertNotCalled(t, "GetByID", mock.Anything, mock.Anything)
+}

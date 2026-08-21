@@ -236,3 +236,17 @@ func (r *PgRepository) IsSuppressed(ctx context.Context, cellID string) (bool, e
 		cellID).Scan(&suppressed)
 	return suppressed, err
 }
+
+// PiercedCellCount reports how many cells are currently in a Symbiont-carved
+// pocket (T-806, symbiont_geo_playstyle.md §10): a live, world-wide,
+// collective "how much dome is currently pierced" gauge — not a personal
+// stat. Not on the Repository interface (optional, avoids churning mocks).
+func (r *PgRepository) PiercedCellCount(ctx context.Context) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx, `
+		SELECT count(*) FROM cells WHERE pierced_until IS NOT NULL AND pierced_until > now()`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("pierced cell count: %w", err)
+	}
+	return n, nil
+}

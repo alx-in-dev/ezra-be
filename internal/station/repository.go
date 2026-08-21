@@ -20,6 +20,10 @@ type Repository interface {
 	ListInRadius(ctx context.Context, lat, lng, radiusM float64) ([]PowerPlant, error)
 	// AdvanceLifecycle moves plants active→degrading→ruins by upkeep age.
 	AdvanceLifecycle(ctx context.Context, activeDays, degradeDays int) error
+	// DegradeOneStep forces a single plant one step down its lifecycle
+	// (active→degrading, degrading→ruins) regardless of upkeep age — the
+	// Symbiont Sabotage strike (T-804). Returns the resulting state.
+	DegradeOneStep(ctx context.Context, id string) (string, error)
 	// Upkeep resets the nearest non-ruins plant the player owns within radiusM
 	// to active. Returns false if none is in range.
 	Upkeep(ctx context.Context, playerID string, lat, lng, radiusM float64) (bool, error)
@@ -112,6 +116,19 @@ func (r *PgRepository) Upkeep(ctx context.Context, playerID string, lat, lng, ra
 		return false, fmt.Errorf("station upkeep: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+func (r *PgRepository) DegradeOneStep(ctx context.Context, id string) (string, error) {
+	var state string
+	err := r.db.QueryRow(ctx, `
+		UPDATE power_plants
+		SET state = CASE state WHEN 'active' THEN 'degrading' ELSE 'ruins' END
+		WHERE id = $1
+		RETURNING state`, id).Scan(&state)
+	if err != nil {
+		return "", fmt.Errorf("degrade station: %w", err)
+	}
+	return state, nil
 }
 
 func (r *PgRepository) ListInRadius(ctx context.Context, lat, lng, radiusM float64) ([]PowerPlant, error) {

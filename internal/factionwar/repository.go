@@ -18,6 +18,9 @@ type Repository interface {
 	RecordReward(ctx context.Context, playerID, season string, rank, points, crystals int) error
 	UnsettledSeasons(ctx context.Context, exceptSeason string) ([]string, error)
 	LastReward(ctx context.Context, playerID string) (*SeasonReward, error)
+	// SeasonScoreCount reports how many players have scored in a season — 0 means
+	// the season is fresh (post-wipe), the between-seasons window (T-826).
+	SeasonScoreCount(ctx context.Context, season string) (int, error)
 }
 
 type PgRepository struct {
@@ -117,6 +120,16 @@ func (r *PgRepository) UnsettledSeasons(ctx context.Context, exceptSeason string
 	return out, rows.Err()
 }
 
+func (r *PgRepository) SeasonScoreCount(ctx context.Context, season string) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx,
+		`SELECT count(*) FROM faction_scores WHERE season = $1`, season).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("season score count: %w", err)
+	}
+	return n, nil
+}
+
 func (r *PgRepository) LastReward(ctx context.Context, playerID string) (*SeasonReward, error) {
 	var sr SeasonReward
 	err := r.db.QueryRow(ctx, `
@@ -132,27 +145,64 @@ func (r *PgRepository) LastReward(ctx context.Context, playerID string) (*Season
 	return &sr, nil
 }
 
+// Source-aura radii for the N1 territory score. Mirror of infection's
+// hiveRadiusL1/L2/L3 and maxRiftSearchM (and hive.LevelConfig.RadiusM) — kept as
+// local literals to avoid an infection/hive → factionwar import edge, the same
+// workaround wave 1 used. A cell is Symbiont territory when it sits inside one
+// of these reaches of an open source (or is currently pierced).
+const (
+	auraHiveRadiusL1 = 200.0
+	auraHiveRadiusL2 = 350.0
+	auraHiveRadiusL3 = 500.0
+	auraRiftRadiusM  = 200.0
+)
+
 func (r *PgRepository) RegionBalance(ctx context.Context, lat, lng, radiusM float64) (RegionBalance, error) {
 	var b RegionBalance
-	// One round-trip: counts of the world objects that decide the balance.
+	// N1 (T-822): score projected territory, not ambient infection. Per region
+	// cell we resolve domed / pierced / in-source-aura once, then reduce:
+	//   Human    = domed AND NOT pierced  (its aura minus Symbiont-carved holes)
+	//   Symbiont = aura OR pierced        (source reach plus pierced cells, deduped)
+	// A pierced cell is by definition a domed cell (pierce = TTL bypass on a
+	// domed cell), so excluding pierced from Human is what stops one cell scoring
+	// for BOTH sides. Ambient clean/infected counts are carried as diagnostics.
 	err := r.db.QueryRow(ctx, `
-		WITH pt AS (SELECT ST_SetSRID(ST_MakePoint($2::float8, $1::float8), 4326)::geography AS g)
+		WITH pt AS (SELECT ST_SetSRID(ST_MakePoint($2::float8, $1::float8), 4326)::geography AS g),
+		region AS (
+			SELECT
+				(EXISTS (SELECT 1 FROM domed_cells d WHERE d.cell_id = c.id)) AS domed,
+				(c.pierced_until IS NOT NULL AND c.pierced_until > now()) AS pierced,
+				(c.infection <= 20) AS clean,
+				(c.infection > 50) AS infected,
+				(EXISTS (
+					SELECT 1 FROM hives h WHERE h.closed_at IS NULL
+					  AND ST_DWithin(c.geom::geography, h.geom::geography,
+							CASE h.level WHEN 1 THEN $4::float8 WHEN 2 THEN $5::float8 ELSE $6::float8 END)
+				) OR EXISTS (
+					SELECT 1 FROM rifts rf JOIN cells rc ON rc.id = rf.cell_id
+					WHERE rf.closed_at IS NULL AND ST_DWithin(c.geom::geography, rc.geom::geography, $7::float8)
+				)) AS aura
+			FROM cells c, pt
+			WHERE ST_DWithin(c.geom::geography, pt.g, $3)
+		)
 		SELECT
-			(SELECT count(*) FROM cells c, pt WHERE ST_DWithin(c.geom::geography, pt.g, $3)
-				AND EXISTS (SELECT 1 FROM domed_cells d WHERE d.cell_id = c.id)),
-			(SELECT count(*) FROM cells c, pt WHERE ST_DWithin(c.geom::geography, pt.g, $3) AND c.infection <= 20),
-			(SELECT count(*) FROM cells c, pt WHERE ST_DWithin(c.geom::geography, pt.g, $3) AND c.infection > 50),
+			count(*) FILTER (WHERE domed),
+			count(*) FILTER (WHERE clean),
+			count(*) FILTER (WHERE infected),
+			count(*) FILTER (WHERE aura),
+			count(*) FILTER (WHERE pierced),
+			count(*) FILTER (WHERE domed AND NOT pierced),
+			count(*) FILTER (WHERE aura OR pierced),
 			(SELECT count(*) FROM hives h, pt WHERE h.closed_at IS NULL AND ST_DWithin(h.geom::geography, pt.g, $3)),
 			(SELECT count(*) FROM rifts rf JOIN cells rc ON rc.id = rf.cell_id, pt
-				WHERE rf.closed_at IS NULL AND ST_DWithin(rc.geom::geography, pt.g, $3))`,
-		lat, lng, radiusM).Scan(&b.DomedCells, &b.CleanCells, &b.InfectedCells, &b.OpenHives, &b.OpenRifts)
+				WHERE rf.closed_at IS NULL AND ST_DWithin(rc.geom::geography, pt.g, $3))
+		FROM region`,
+		lat, lng, radiusM, auraHiveRadiusL1, auraHiveRadiusL2, auraHiveRadiusL3, auraRiftRadiusM).
+		Scan(&b.DomedCells, &b.CleanCells, &b.InfectedCells, &b.AuraCells, &b.PiercedCells,
+			&b.HumanRaw, &b.SymbiontRaw, &b.OpenHives, &b.OpenRifts)
 	if err != nil {
 		return b, fmt.Errorf("region balance: %w", err)
 	}
-	// Asymmetric weighting (faction_war.md spirit): humans hold area & clean;
-	// symbionts hold infection, hives and active rifts.
-	b.HumanRaw = b.DomedCells*2 + b.CleanCells
-	b.SymbiontRaw = b.InfectedCells + b.OpenHives*60 + b.OpenRifts*20
 	total := b.HumanRaw + b.SymbiontRaw
 	if total > 0 {
 		b.HumanPct = int(float64(b.HumanRaw) * 100.0 / float64(total))

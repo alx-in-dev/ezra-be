@@ -31,6 +31,17 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, st)
 }
 
+// Pressure handles GET /symbiont/pressure — the world-wide, collective
+// pierced-cell gauge (T-806). Open to any authenticated player.
+func (h *Handler) Pressure(w http.ResponseWriter, r *http.Request) {
+	p, err := h.service.Pressure(r.Context())
+	if err != nil {
+		httputil.Error(w, httputil.NewInternal("failed to read pressure"))
+		return
+	}
+	httputil.JSON(w, http.StatusOK, p)
+}
+
 // RaiseRequest is the body for the pocket-carving verb.
 type RaiseRequest struct {
 	Lat float64 `json:"lat"`

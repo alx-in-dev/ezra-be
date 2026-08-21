@@ -184,6 +184,31 @@ func TestStart_Success(t *testing.T) {
 	battles.AssertExpectations(t)
 }
 
+// fakeFaction is a stub FactionChecker (T-800).
+type fakeFaction struct{ symbionts map[string]bool }
+
+func (f fakeFaction) IsSymbiont(_ context.Context, playerID string) (bool, error) {
+	return f.symbionts[playerID], nil
+}
+
+func TestStart_RejectsSymbiont(t *testing.T) {
+	battles := &mockBattleRepo{}
+	rifts := &mockRiftRepo{}
+	squads := &mockSquadProvider{}
+	svc := NewService(battles, rifts, squads, nil, nil, nil, nil)
+	svc.SetFactionChecker(fakeFaction{symbionts: map[string]bool{"sym-1": true}})
+	ctx := context.Background()
+
+	_, err := svc.Start(ctx, "sym-1", "s1", "rift", "r1")
+
+	appErr, ok := err.(*httputil.AppError)
+	if !ok {
+		t.Fatalf("expected *httputil.AppError, got %T: %v", err, err)
+	}
+	assert.Equal(t, "symbiont_no_human_toolkit", appErr.Code)
+	squads.AssertNotCalled(t, "GetSquadOwner", mock.Anything, mock.Anything)
+}
+
 // fakeRiftLimiter is a hand-rolled RiftDailyLimiter stub: ClosuresToday returns
 // a fixed count, RecordClosure logs the tier.
 type fakeRiftLimiter struct {
@@ -199,28 +224,36 @@ func (f *fakeRiftLimiter) RecordClosure(_ context.Context, _, riftType string) e
 	return nil
 }
 
-// The minor-rift daily cap is currently disabled (canon.riftDailyCapByType is
-// empty), so even a high closure count must not block engaging a minor rift.
-// The limiter is still wired and records closures; only the cap gate is off.
-func TestStart_MinorRiftUncapped(t *testing.T) {
-	battles := &mockBattleRepo{}
-	rifts := &mockRiftRepo{}
-	squads := &mockSquadProvider{}
-	svc := NewService(battles, rifts, squads, nil, nil, nil, nil)
-	svc.SetRiftLimiter(&fakeRiftLimiter{used: 99}) // would have tripped the old cap of 3
-	ctx := context.Background()
+// The minor-rift daily cap is ENABLED in N1 (canon.riftDailyCapByType, T-827):
+// engaging another minor rift is refused once today's closures reach the cap
+// (10), but allowed below it. The gate trips before energy is charged.
+func TestStart_MinorRiftDailyCap(t *testing.T) {
+	engage := func(used int) (*Battle, error) {
+		battles := &mockBattleRepo{}
+		rifts := &mockRiftRepo{}
+		squads := &mockSquadProvider{}
+		svc := NewService(battles, rifts, squads, nil, nil, nil, nil)
+		svc.SetRiftLimiter(&fakeRiftLimiter{used: used})
+		ctx := context.Background()
 
-	squads.On("GetSquadOwner", ctx, "s1").Return("p1", nil)
-	squads.On("GetSquadUnits", ctx, "s1").Return([]SquadUnit{
-		{ID: "u1", Type: "fighter"}, {ID: "u2", Type: "fighter"}, {ID: "u3", Type: "fighter"},
-		{ID: "u4", Type: "fighter"}, {ID: "u5", Type: "fighter"},
-	}, nil)
-	rifts.On("GetByID", ctx, "r1").Return(&rift.Rift{ID: "r1", Type: "minor"}, nil)
-	squads.On("StartMission", ctx, "s1", "rift", "r1").Return(nil)
-	battles.On("Create", ctx, mock.AnythingOfType("*battle.Battle")).Return(nil)
+		squads.On("GetSquadOwner", ctx, "s1").Return("p1", nil)
+		squads.On("GetSquadUnits", ctx, "s1").Return([]SquadUnit{
+			{ID: "u1", Type: "fighter"}, {ID: "u2", Type: "fighter"}, {ID: "u3", Type: "fighter"},
+			{ID: "u4", Type: "fighter"}, {ID: "u5", Type: "fighter"},
+		}, nil)
+		rifts.On("GetByID", ctx, "r1").Return(&rift.Rift{ID: "r1", Type: "minor"}, nil)
+		squads.On("StartMission", ctx, "s1", "rift", "r1").Return(nil)
+		battles.On("Create", ctx, mock.AnythingOfType("*battle.Battle")).Return(nil)
+		return svc.Start(ctx, "p1", "s1", "rift", "r1")
+	}
 
-	b, err := svc.Start(ctx, "p1", "s1", "rift", "r1")
+	// At the cap: refused, no battle.
+	b, err := engage(10)
+	assert.Error(t, err)
+	assert.Nil(t, b)
 
+	// Below the cap: allowed.
+	b, err = engage(5)
 	assert.NoError(t, err)
 	assert.NotNil(t, b)
 }

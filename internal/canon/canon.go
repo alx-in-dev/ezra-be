@@ -174,12 +174,18 @@ func BattleEnergyCost(riftType string) int {
 }
 
 // riftDailyCapByType caps how many rifts of a tier a player may close per day
-// (anti-farm / anti-inflation — docs/06_economy.md §6.3). Currently DISABLED
-// (empty = all tiers uncapped): the cap added friction in development (and could
-// soft-lock the onboarding Contact rift) with little upside pre-balance. The
-// limiter infrastructure stays wired, so re-enabling is one line here, e.g.
-// {"minor": 10}. 0 / missing = uncapped.
-var riftDailyCapByType = map[string]int{}
+// (anti-farm / anti-inflation — docs/06_economy.md §6.3). ENABLED in N1 (T-827,
+// deliberate anti-farm per spirit_world_and_symbiont_nest.md §3): a localized
+// world makes each source scarce, so unbounded farming would deflate that
+// scarcity. Caps count VICTORIES only (battle/service.go), so abandoned/lost
+// fights never burn the cap and the single onboarding Contact rift (needs 1
+// minor close) can't be soft-locked. Values are generous headroom over normal
+// play, not a grind wall; 0 / missing = uncapped.
+var riftDailyCapByType = map[string]int{
+	"minor":    10,
+	"medium":   6,
+	"critical": 3,
+}
 
 // RiftDailyCap returns the per-player daily closure cap for a rift tier, or 0
 // when the tier is uncapped. Closures are counted on victory, so abandoned or
@@ -216,6 +222,27 @@ func RiftDifficultyScale(playerLevel int) float64 {
 	}
 	return f
 }
+
+// Regional source budget (N1, docs/feature/spirit_world_and_symbiont_nest.md §3,
+// perf_spike_N0.md §6). Live infection sources — hives ∪ open rifts (∪ future
+// nests/geysers) — share ONE per-region cap, extending the maxOpenHives pattern
+// to the whole source set so localized infection can't grow the source count
+// quadratically. A floor keeps a region with live players from going sterile
+// after localization (organic spawn is infection-gated, and a localized region
+// has no infection≥75 cells left to reignite from).
+//
+// "Region" has no fixed world partition here — it is a disk of
+// SourceRegionRadiusM around a point, a moving window mirroring the seed-spacing
+// pattern (hive seedExcludeM / rift organicSpacingM). ~2.8 km disk ≈ the N0
+// 5×5 km reference region. Budget 72 (12 hive + 60 rift) is the N0-measured safe
+// density; the floor is a design pick (no canon number) — small, just enough
+// that a played area always has a source to fight.
+const (
+	SourceBudgetPerRegion = 72
+	SourceFloorPerRegion  = 3
+	SourceRegionRadiusM   = 2800.0
+	SourceFloorActiveDays = 7
+)
 
 const (
 	EventBattleStarted         = "BattleStarted"

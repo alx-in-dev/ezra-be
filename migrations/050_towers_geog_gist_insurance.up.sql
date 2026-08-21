@@ -1,0 +1,17 @@
+-- T-821(a): GiST index on towers keyed by (geom::geography), so the tower
+-- suppression predicate in BatchRecalculate is index-assisted (Index Scan, not
+-- Seq Scan over every beacon per cell).
+--
+-- This index ALREADY exists since migration 023 (idx_towers_geog) and is never
+-- dropped; the N0 perf report concluded "towers has only a PK" from a
+-- `\di towers*` name-glob, which lists indexes by NAME — and idx_towers_geog
+-- starts with "idx", so the glob silently missed it. IF NOT EXISTS makes this a
+-- no-op on any DB that ran 023 (i.e. all of them) while keeping the wave's
+-- 050/051 numbering intact and self-healing a hypothetical DB that lacks it.
+--
+-- The real bottleneck was NOT a missing index but the variable `t.radius_m`
+-- inside ST_DWithin: the search box then depends on the indexed row itself, so
+-- the planner cannot use the index. The fix lives in the query (T-821c): a
+-- bounded-expand predicate with the constant max tower radius, evaluated
+-- alongside the exact per-tower radius check.
+CREATE INDEX IF NOT EXISTS idx_towers_geog ON towers USING GIST ((geom::geography));

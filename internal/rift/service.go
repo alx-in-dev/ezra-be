@@ -77,6 +77,13 @@ func (s *Service) MaybeSpawn(ctx context.Context, cellID string, infection float
 		return nil, nil
 	}
 
+	// T-823 regional source budget: this ambient (hive-seeded) spawn counts
+	// against the combined per-region source cap. PvP breach (ForceSpawn) and
+	// onboarding (EnsureContactRift) are exempt so the cap can't soft-lock them.
+	if s.regionAtSourceBudget(ctx, c.Lat, c.Lng) {
+		return nil, nil
+	}
+
 	chance := (infection - 75) * 0.02 / 12 // per 5 min
 	if rand.Float64() > chance {
 		return nil, nil
@@ -175,10 +182,90 @@ func (s *Service) SpawnOrganic(ctx context.Context) (spawned int, err error) {
 		if tooClose {
 			continue
 		}
+		// T-823 regional source budget: don't add an organic source to a region
+		// already at the combined cap (hives ∪ open rifts).
+		if s.regionAtSourceBudget(ctx, c.Lat, c.Lng) {
+			continue
+		}
 		if _, err := s.ForceSpawn(ctx, c.CellID, riftTypeForInfection(c.Infection)); err != nil {
 			return spawned, err
 		}
 		opened = append(opened, c)
+		spawned++
+	}
+	return spawned, nil
+}
+
+// sourceCounter counts live infection sources (hives ∪ open rifts) in a region
+// disk (T-823). Optional so test fakes leave spawning ungated.
+type sourceCounter interface {
+	CountOpenSourcesInRadius(ctx context.Context, lat, lng, radiusM float64) (int, error)
+}
+
+// floorLister finds active-player regions below the source floor and a spaced
+// cell to reignite them on (T-823).
+type floorLister interface {
+	FloorRegions(ctx context.Context, regionRadiusM float64, floor, activeDays, limit int) ([]FloorRegion, error)
+	FloorSpawnCandidate(ctx context.Context, lat, lng, searchM, spacingM float64) (string, bool, error)
+}
+
+// floorSpawnSearchM bounds how far from the player a floor rift may land — near
+// the player, but far enough to find a cell spaced from existing rifts.
+const floorSpawnSearchM = 800.0
+
+// regionAtSourceBudget reports whether the region around (lat,lng) already holds
+// the regional source budget. Fails open on a missing/erroring counter so a
+// glitch doesn't freeze all spawning.
+func (s *Service) regionAtSourceBudget(ctx context.Context, lat, lng float64) bool {
+	counter, ok := s.rifts.(sourceCounter)
+	if !ok {
+		return false
+	}
+	n, err := counter.CountOpenSourcesInRadius(ctx, lat, lng, canon.SourceRegionRadiusM)
+	if err != nil {
+		return false
+	}
+	return n >= canon.SourceBudgetPerRegion
+}
+
+// EnsureFloorSources is the lower bound of the regional budget: for each region
+// with live players but fewer than the source floor, force-spawn one minor rift
+// so a localized/migrated world never leaves a played area sterile (organic
+// spawn is infection-gated and can't reignite a fully-cleansed region). Returns
+// how many floor rifts were opened. Capped per tick; same-tick spawns are kept
+// apart by organicSpacingM. No-op on a repo without floor support (test fakes).
+func (s *Service) EnsureFloorSources(ctx context.Context) (spawned int, err error) {
+	lister, ok := s.rifts.(floorLister)
+	if !ok {
+		return 0, nil
+	}
+	regions, err := lister.FloorRegions(ctx, canon.SourceRegionRadiusM, canon.SourceFloorPerRegion, canon.SourceFloorActiveDays, organicSpawnPerTick)
+	if err != nil {
+		return 0, err
+	}
+	var opened []FloorRegion
+	for _, reg := range regions {
+		tooClose := false
+		for _, o := range opened {
+			if geo.Haversine(reg.Lat, reg.Lng, o.Lat, o.Lng) < organicSpacingM {
+				tooClose = true
+				break
+			}
+		}
+		if tooClose {
+			continue
+		}
+		cellID, ok, err := lister.FloorSpawnCandidate(ctx, reg.Lat, reg.Lng, floorSpawnSearchM, organicSpacingM)
+		if err != nil {
+			return spawned, err
+		}
+		if !ok {
+			continue // no spaced, source-free cell near this player — leave as-is
+		}
+		if _, err := s.ForceSpawn(ctx, cellID, "minor"); err != nil {
+			return spawned, err
+		}
+		opened = append(opened, reg)
 		spawned++
 	}
 	return spawned, nil

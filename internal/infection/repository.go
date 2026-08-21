@@ -47,6 +47,26 @@ func NewPgRepository(db *pgxpool.Pool) *PgRepository {
 // snapshot, so the result does not depend on cell processing order.
 func (r *PgRepository) BatchRecalculate(ctx context.Context) (int64, error) {
 	const query = `
+		WITH active_sources AS MATERIALIZED (
+			-- T-821: live infection sources as ONE materialized set (not a
+			-- correlated subquery re-run per cell). MATERIALIZED is explicit
+			-- because PG16 would otherwise inline this CTE and re-evaluate it at
+			-- every reference (source gate + cold-cell skip). Each source carries
+			-- its own reach radius: a hive's zone radius (by level), a rift's
+			-- maxRiftSearchM. The set is tiny (~region source budget), so the
+			-- per-cell ST_DWithin against it is index-assisted on the cell side.
+			SELECT (h.geom::geography) AS geog,
+				   CASE h.level WHEN 1 THEN $13::float8
+								WHEN 2 THEN $14::float8
+								ELSE $15::float8 END AS radius_m
+			FROM hives h
+			WHERE h.closed_at IS NULL
+			UNION ALL
+			SELECT (rc.geom::geography) AS geog, $8::float8 AS radius_m
+			FROM rifts r
+			JOIN cells rc ON rc.id = r.cell_id
+			WHERE r.closed_at IS NULL
+		)
 		UPDATE cells AS c SET
 			infection = CASE
 			WHEN EXISTS (SELECT 1 FROM stabilized_cells sc WHERE sc.cell_id = c.id)
@@ -59,13 +79,23 @@ func (r *PgRepository) BatchRecalculate(ctx context.Context) (int64, error) {
 			ELSE GREATEST(0.0, LEAST(100.0,
 				c.infection
 				+ (
-					$1::float8
-					+ $2::float8 * (
-						SELECT COUNT(*)::float8 FROM cells n
-						WHERE n.id <> c.id
-						  AND n.infection > $3::float8
-						  AND ST_DWithin(c.geom::geography, n.geom::geography, $4::float8)
-					)
+					-- T-820 localization: ambient + neighbor growth fires ONLY within
+					-- the reach of a live source (active Hive ∪ open rift). Far from any
+					-- source the world is neutral by itself — this gate replaces the old
+					-- unconditional global background growth. Rift pressure (below) is
+					-- already source-local, so it stays outside the gate.
+					CASE WHEN EXISTS (
+						SELECT 1 FROM active_sources s
+						WHERE ST_DWithin(c.geom::geography, s.geog, s.radius_m)
+					) THEN (
+						$1::float8
+						+ $2::float8 * (
+							SELECT COUNT(*)::float8 FROM cells n
+							WHERE n.id <> c.id
+							  AND n.infection > $3::float8
+							  AND ST_DWithin(c.geom::geography, n.geom::geography, $4::float8)
+						)
+					) ELSE 0.0 END
 					-- Rift pressure scales with intensity (×1.0 at 1 → ×1.5 at 100):
 				-- aged / amplified / empowered rifts push harder.
 				+ COALESCE((
@@ -89,7 +119,15 @@ func (r *PgRepository) BatchRecalculate(ctx context.Context) (int64, error) {
 						* (CASE WHEN t.brownout THEN 0.5 ELSE 1.0 END)
 						* (1.0 - $10::float8 * (ST_Distance(c.geom::geography, t.geom::geography) / t.radius_m)))
 					FROM towers t
-					WHERE ST_DWithin(c.geom::geography, t.geom::geography, t.radius_m)
+					-- T-821(c): the constant bounded-expand predicate ($16 = max tower
+					-- radius) is what the GiST index idx_towers_geog can serve — the
+					-- planner builds a fixed search box around the cell, not one that
+					-- depends on the per-row t.radius_m (which forced a Seq Scan over
+					-- every beacon per cell, the 65s p50 bottleneck from the N0 report).
+					-- The exact t.radius_m check refines it; t.radius_m ≤ $16 always
+					-- (max L5 radius), matching the per-cell path's maxTowerSearchM clip.
+					WHERE ST_DWithin(c.geom::geography, t.geom::geography, $16::float8)
+					  AND ST_DWithin(c.geom::geography, t.geom::geography, t.radius_m)
 				), 0.0) * $9::float8
 				-- Civic Spire: a megastructure suppresses infection region-wide
 				-- for everyone in its radius (megastructure_spire.md). Active =
@@ -105,7 +143,18 @@ func (r *PgRepository) BatchRecalculate(ctx context.Context) (int64, error) {
 						  AND ST_DWithin(c.geom::geography, sp.geom::geography, sp.radius_m)
 					), 0.0) * $9::float8
 			)) END,
-			last_calculated = NOW()`
+			last_calculated = NOW()
+		-- T-821(b): cold-cell skip. A cell with infection=0 and no source in
+		-- reach can only stay 0 (no growth without a source; suppression cannot
+		-- push below 0), so it is excluded from the tick entirely — in a
+		-- localized/neutral world that drops most cells before the expensive
+		-- correlated subqueries even run. Stabilized/domed/suppressed cells with
+		-- infection>0 still pass and settle as before.
+		WHERE c.infection > 0.0
+		   OR EXISTS (
+			SELECT 1 FROM active_sources s
+			WHERE ST_DWithin(c.geom::geography, s.geog, s.radius_m)
+		)`
 
 	tag, err := r.db.Exec(ctx, query,
 		baseGrowthPerHour,
@@ -120,6 +169,10 @@ func (r *PgRepository) BatchRecalculate(ctx context.Context) (int64, error) {
 		towerFalloff,
 		domeSuppressionPerHour()*(recalcIntervalMin/minutesPerHour),
 		spireSuppressionPerHour,
+		hiveRadiusL1,
+		hiveRadiusL2,
+		hiveRadiusL3,
+		maxTowerSearchM,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("batch recalculate infection: %w", err)
