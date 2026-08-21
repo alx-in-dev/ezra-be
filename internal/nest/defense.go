@@ -39,7 +39,41 @@ func (m skillDefenderModifier) DefenseMultiplier(ctx context.Context, n *Nest) (
 	return 1 + m.perPoint*float64(pts), nil
 }
 
-// Commander → tamed-spirit control cap (T-846) is intentionally NOT wired here:
-// spirits do not exist until N4. The branch is documented as N4-gated so it
-// shows no dead effect now (anti-C1 "dead signals") and lights up when the
-// spirit garrison (N4) registers its own modifier / cap reader.
+// GarrisonReader reports how many tamed spirits the owner is keeping HOME (idle /
+// available — not dispatched to raid) to defend the nest (T-873). Implemented by
+// a thin adapter over the roster entity repository in main — kept an interface so
+// the nest package doesn't import roster.
+type GarrisonReader interface {
+	HomeGarrison(ctx context.Context, playerID string) (int, error)
+}
+
+// spiritGarrisonModifier lengthens the siege window by the owner's home garrison
+// of tamed spirits (T-873): the N4 payoff of the weaken→tame loop, and the
+// strategic tension of holding the swarm home vs. sending it to raid human
+// beacons. Composes with skillDefenderModifier through the same DefenseModifier
+// seam (ADR-N3-5) — no state-machine change. Capped (canon.NestGarrisonCap) so a
+// big roster can't make a nest unbreakable (venue-safety / П2).
+type spiritGarrisonModifier struct {
+	reader  GarrisonReader
+	perUnit float64
+	cap     int
+}
+
+// NewSpiritGarrisonModifier builds the N4 spirit-garrison defense modifier (T-873).
+func NewSpiritGarrisonModifier(r GarrisonReader) DefenseModifier {
+	return spiritGarrisonModifier{reader: r, perUnit: canon.NestGarrisonWindowPerSpirit, cap: canon.NestGarrisonCap}
+}
+
+func (m spiritGarrisonModifier) DefenseMultiplier(ctx context.Context, n *Nest) (float64, error) {
+	g, err := m.reader.HomeGarrison(ctx, n.OwnerID)
+	if err != nil {
+		return 1, err
+	}
+	if g < 0 {
+		g = 0
+	}
+	if g > m.cap {
+		g = m.cap
+	}
+	return 1 + m.perUnit*float64(g), nil
+}

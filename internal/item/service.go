@@ -64,6 +64,13 @@ func (s *Service) RollBlueprintFragment(ctx context.Context, playerID string, ba
 	return true, nil
 }
 
+// Consume atomically spends qty of a fungible item, returning false if the
+// player is short. Used as a resource sink (e.g. the Ionized Charge repellent
+// spends hack_key, T-881).
+func (s *Service) Consume(ctx context.Context, playerID, itemType string, qty int) (bool, error) {
+	return s.repo.Consume(ctx, playerID, itemType, qty)
+}
+
 // ListByPlayer returns the player's inventory.
 func (s *Service) ListByPlayer(ctx context.Context, playerID string) ([]Item, error) {
 	items, err := s.repo.ListByPlayer(ctx, playerID)

@@ -18,7 +18,8 @@ func (f *fakeRepo) Add(_ context.Context, _, itemType, variant string, delta int
 	return f.qty[k], nil
 }
 
-func (f *fakeRepo) ListByPlayer(context.Context, string) ([]Item, error) { return nil, nil }
+func (f *fakeRepo) Consume(context.Context, string, string, int) (bool, error) { return true, nil }
+func (f *fakeRepo) ListByPlayer(context.Context, string) ([]Item, error)       { return nil, nil }
 
 func TestEffectivePityChance(t *testing.T) {
 	const base = 0.02

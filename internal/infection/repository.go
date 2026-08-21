@@ -126,9 +126,13 @@ func (r *PgRepository) BatchRecalculate(ctx context.Context) (int64, error) {
 					), 0.0)
 				) * $9::float8
 				-- Brownout beacons suppress at half strength (beacon_network_dome.md §5).
+				-- N2 (T-864): a spirit-pressured perimeter beacon is treated as brownout
+				-- for the duration of the wave, so infection creeps in — the cascade.
 				- COALESCE((
 					SELECT SUM(t.effect_per_hour
-						* (CASE WHEN t.brownout THEN 0.5 ELSE 1.0 END)
+						* (CASE WHEN t.brownout
+						         OR (t.spirit_pressure_until IS NOT NULL AND t.spirit_pressure_until > now())
+						        THEN 0.5 ELSE 1.0 END)
 						* (1.0 - $10::float8 * (ST_Distance(c.geom::geography, t.geom::geography) / t.radius_m)))
 					FROM towers t
 					-- T-821(c): the constant bounded-expand predicate ($16 = max tower

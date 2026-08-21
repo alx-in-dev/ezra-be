@@ -427,9 +427,27 @@ func (s *Service) recompute(ctx context.Context, playerID string) (*State, error
 	if err := s.repo.ClearDomed(ctx, playerID); err != nil {
 		slog.Error("clear domed failed", "player_id", playerID, "error", err)
 	}
+	// N2 (T-864): a spirit-pressured perimeter beacon drops from the dome for the
+	// wave's duration, so the sealed area shrinks and infection creeps in — the
+	// cascade — without any spirit entering the dome. Energy-brownout behaviour is
+	// unchanged; only spirit pressure carves the dome.
+	pressured := map[string]bool{}
+	if ids, err := s.repo.SpiritPressuredIDs(ctx, playerID); err == nil {
+		for _, id := range ids {
+			pressured[id] = true
+		}
+	}
+	domePowered := powered
+	if len(pressured) > 0 {
+		domePowered = make(map[string]bool, len(powered))
+		for id, ok := range powered {
+			domePowered[id] = ok && !pressured[id]
+		}
+	}
+
 	var lngs, lats, radii []float64
 	for _, n := range nodes {
-		if powered[n.ID] {
+		if domePowered[n.ID] {
 			lngs = append(lngs, n.Lng)
 			lats = append(lats, n.Lat)
 			radii = append(radii, canon.NodeEnergyRadius(n.IsCore, n.Level))
@@ -445,7 +463,7 @@ func (s *Service) recompute(ctx context.Context, playerID string) (*State, error
 	// Sealed dome(s): closed contours of the network enclose whole blocks; the
 	// area inside (ST_Contains) is domed even where no disk reaches it. A real
 	// ring — not just any disk field — is what "sealed" means.
-	contours := findContours(nodes, powered, depth, parent)
+	contours := findContours(nodes, domePowered, depth, parent)
 	if len(contours) > 0 {
 		if count, err := s.repo.InsertDomedByPolygons(ctx, playerID, contours); err != nil {
 			slog.Error("insert domed by polygons failed", "player_id", playerID, "error", err)

@@ -44,17 +44,17 @@ type EntityView struct {
 	TargetKind     string `json:"target_kind,omitempty"`
 	TargetID       string `json:"target_id,omitempty"`
 	Attunement     int    `json:"attunement"`
-	AttunementUses int    `json:"attunement_uses"`           // cumulative successful uses
-	AttunementNext int    `json:"attunement_next"`           // uses for next rank, -1 if max
+	AttunementUses int    `json:"attunement_uses"` // cumulative successful uses
+	AttunementNext int    `json:"attunement_next"` // uses for next rank, -1 if max
 	CapWeight      int    `json:"cap_weight"`
 	UnlockLevel    int    `json:"unlock_level"`
-	Locked         bool   `json:"locked"`                    // archetype above current RL → cannot be assigned yet
-	ETASeconds     int    `json:"eta_seconds,omitempty"`     // until manifesting/recovering resolves
+	Locked         bool   `json:"locked"`                // archetype above current RL → cannot be assigned yet
+	ETASeconds     int    `json:"eta_seconds,omitempty"` // until manifesting/recovering resolves
 	// L4 command-screen card detail.
-	PressurePower  int    `json:"pressure_power"` // per-tick effect magnitude at current rank
-	Spec           string `json:"spec"`           // specialization line (RU)
-	RangeM         int    `json:"range_m"`        // action/acquire range
-	RecoveryMin    int    `json:"recovery_min"`   // recovery window at current rank (minutes)
+	PressurePower int    `json:"pressure_power"` // per-tick effect magnitude at current rank
+	Spec          string `json:"spec"`           // specialization line (RU)
+	RangeM        int    `json:"range_m"`        // action/acquire range
+	RecoveryMin   int    `json:"recovery_min"`   // recovery window at current rank (minutes)
 }
 
 func (s *Service) clock() time.Time {
@@ -204,7 +204,13 @@ func (s *Service) ControlUsage(ctx context.Context, playerID string) (used, capa
 		return 0, 0, 1, nil
 	}
 	level = s.levelOf(ctx, playerID)
-	capacity = canon.ResonanceControlCap(level)
+	cmdPts := 0
+	if s.commander != nil {
+		if pts, cerr := s.commander.CommanderPoints(ctx, playerID); cerr == nil {
+			cmdPts = pts
+		}
+	}
+	capacity = canon.SpiritControlCap(level, cmdPts) // T-846: Commander skill raises the cap
 	list, err := s.entities.ListByPlayer(ctx, playerID)
 	if err != nil {
 		return 0, capacity, level, err
@@ -526,4 +532,19 @@ func (s *Service) levelOf(ctx context.Context, playerID string) int {
 		return level
 	}
 	return 1
+}
+
+// GrantEntity creates one new AVAILABLE entity of an archetype and returns it —
+// the entry point for N2 spirit taming (a tamed spirit joins the roster). The
+// control cap is enforced at ASSIGN time, not on ownership, so taming can always
+// add to the stable; the player just can't field more than the cap at once.
+func (s *Service) GrantEntity(ctx context.Context, playerID, archetype string) (*Entity, error) {
+	if _, ok := canon.EntitySpecFor(archetype); !ok {
+		archetype = canon.EntityAssault
+	}
+	e := &Entity{PlayerID: playerID, Archetype: archetype, Attunement: 1, Status: canon.EntityAvailable}
+	if err := s.entities.Create(ctx, e); err != nil {
+		return nil, err
+	}
+	return e, nil
 }

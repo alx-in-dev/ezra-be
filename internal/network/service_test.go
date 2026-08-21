@@ -20,13 +20,14 @@ type fakeRepo struct {
 	polyInvoked bool
 }
 
-func (f *fakeRepo) GetCore(_ context.Context, _ string) (*Core, error)            { return f.core, nil }
-func (f *fakeRepo) CreateCore(_ context.Context, _ *Core) error                   { return nil }
-func (f *fakeRepo) UpdateCore(_ context.Context, _ *Core) error                   { return nil }
-func (f *fakeRepo) GetNodes(_ context.Context, _ string) ([]Node, error)          { return f.nodes, nil }
-func (f *fakeRepo) ClearDomed(_ context.Context, _ string) error                  { f.cleared = true; return nil }
-func (f *fakeRepo) CountDomed(_ context.Context, _ string) (int, error)           { return f.domedCount, nil }
-func (f *fakeRepo) NearestCellID(_ context.Context, _, _ float64) (string, error) { return "", nil }
+func (f *fakeRepo) GetCore(_ context.Context, _ string) (*Core, error)               { return f.core, nil }
+func (f *fakeRepo) CreateCore(_ context.Context, _ *Core) error                      { return nil }
+func (f *fakeRepo) UpdateCore(_ context.Context, _ *Core) error                      { return nil }
+func (f *fakeRepo) GetNodes(_ context.Context, _ string) ([]Node, error)             { return f.nodes, nil }
+func (f *fakeRepo) ClearDomed(_ context.Context, _ string) error                     { f.cleared = true; return nil }
+func (f *fakeRepo) SpiritPressuredIDs(_ context.Context, _ string) ([]string, error) { return nil, nil }
+func (f *fakeRepo) CountDomed(_ context.Context, _ string) (int, error)              { return f.domedCount, nil }
+func (f *fakeRepo) NearestCellID(_ context.Context, _, _ float64) (string, error)    { return "", nil }
 func (f *fakeRepo) PlayersWithNodesInRadius(_ context.Context, _, _, _ float64) ([]string, error) {
 	return nil, nil
 }

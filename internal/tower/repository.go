@@ -3,6 +3,7 @@ package tower
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -157,4 +158,25 @@ func (r *PgRepository) CountAllInRadius(ctx context.Context, lat, lng, radiusM f
 	var count int
 	err := r.db.QueryRow(ctx, query, lng, lat, radiusM).Scan(&count)
 	return count, err
+}
+
+// OwnerOf returns the owner player id of a beacon (N2 spirit wave targeting).
+func (r *PgRepository) OwnerOf(ctx context.Context, towerID string) (string, error) {
+	var owner string
+	err := r.db.QueryRow(ctx, `SELECT owner_id::text FROM towers WHERE id = $1`, towerID).Scan(&owner)
+	if err != nil {
+		return "", fmt.Errorf("tower owner: %w", err)
+	}
+	return owner, nil
+}
+
+// SetSpiritPressure marks a beacon under N2 spirit pressure until `until` — a
+// time-boxed brownout cause that shrinks the dome and halves suppression (T-864).
+func (r *PgRepository) SetSpiritPressure(ctx context.Context, towerID string, until time.Time) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE towers SET spirit_pressure_until = $2 WHERE id = $1`, towerID, until)
+	if err != nil {
+		return fmt.Errorf("set spirit pressure: %w", err)
+	}
+	return nil
 }

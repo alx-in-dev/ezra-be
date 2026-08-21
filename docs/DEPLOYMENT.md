@@ -44,17 +44,26 @@ override'ы (`MAX_SPEED_KMH`, `DOME_SUPPRESSION_PER_HOUR`) к продакшн-�
 
 1. `./deploy_remote.sh --build` со своей машины (или из CI, если он когда-нибудь
    появится — пока автоматики нет).
-2. Если изменение включает новую миграцию — зайди по SSH и прогони её на
-   продакшн-БД до или после рестарта приложения, в зависимости от того,
-   обратно совместима ли она с уже запущенным бинарником:
+2. Если изменение включает новую миграцию — прогони её на dev-БД NAS ДО свапа
+   бинарника (все миграции аддитивны: старый бинарник живёт с новыми таблицами,
+   обратное — новый бинарник без таблиц — падает). На NAS **нет `migrate` CLI**;
+   миграции применяются руками через psql в контейнере postgres, по порядку,
+   с `ON_ERROR_STOP=1`:
    ```bash
-   ssh -p 5378 cactus@94.228.120.50
-   cd /data/ezra
-   DATABASE_URL="<prod dsn>" migrate -path migrations -database "$DATABASE_URL" up
+   # с локальной машины, для каждого migrations/NNN_*.up.sql по порядку:
+   ssh cactus@192.168.0.100 \
+     'docker exec -i ezra-postgres-1 psql -U ezra -d ezra -v ON_ERROR_STOP=1' \
+     < migrations/NNN_name.up.sql
+   # затем сдвинь версию (golang-migrate schema_migrations — одна строка):
+   ssh cactus@192.168.0.100 \
+     'docker exec ezra-postgres-1 psql -U ezra -d ezra -c "UPDATE schema_migrations SET version=NNN, dirty=false;"'
    ```
-3. Убедись, что `curl http://94.228.120.50:8081/health` возвращает
-   `{"status":"ok"}` (скрипт делает это автоматически, но перепроверь
-   после миграции).
+   Реальный хост — **NAS 192.168.0.100**, каталог `/home/cactus/docker/projects/ezra`
+   (docker compose). Старый `94.228.120.50:5378 /data/ezra` — устаревший leftover,
+   туда НЕ деплоить (см. шапку `deploy_remote.sh`).
+3. Убедись, что `curl http://94.228.120.50:8081/health` (публичный nginx-релей на
+   NAS) возвращает `{"status":"ok"}` (скрипт делает это автоматически, но
+   перепроверь после миграции).
 
 ## Секреты на сервере
 

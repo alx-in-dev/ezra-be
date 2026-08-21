@@ -16,6 +16,7 @@ import (
 	"github.com/ezra-game/server/internal/auth"
 	"github.com/ezra-game/server/internal/battle"
 	"github.com/ezra-game/server/internal/bestiary"
+	"github.com/ezra-game/server/internal/canon"
 	"github.com/ezra-game/server/internal/capture"
 	"github.com/ezra-game/server/internal/cell"
 	"github.com/ezra-game/server/internal/citylink"
@@ -40,6 +41,7 @@ import (
 	"github.com/ezra-game/server/internal/roster"
 	"github.com/ezra-game/server/internal/shop"
 	"github.com/ezra-game/server/internal/spire"
+	"github.com/ezra-game/server/internal/spirit"
 	"github.com/ezra-game/server/internal/squad"
 	"github.com/ezra-game/server/internal/station"
 	"github.com/ezra-game/server/internal/survivor"
@@ -302,10 +304,31 @@ func main() {
 	// autonomous tick corrodes beacons / amplifies rifts.
 	entityRepo := roster.NewPgEntityRepository(db)
 	rosterSvc.WithEntities(entityRepo, playerRepo)
-	rosterSvc.WithEffectors(towerSvc, riftSvc) // tick effectors (CorrodeTower / AmplifyRift)
-	symbiontSvc.WithRoster(rosterSvc)          // command screen + assign/recall
-	symbiontSvc.WithOnboarding(playerSvc)      // symbiont tutorial: relax verb gate + advance step on action
+	rosterSvc.WithCommanderCap(playerRepo)                                                      // T-846: Commander skill raises the tamed-spirit control cap
+	nestSvc.AddDefenseModifier(nest.NewSpiritGarrisonModifier(&nestGarrisonReader{entityRepo})) // T-873: home-kept tamed spirits harden the nest
+	rosterSvc.WithEffectors(towerSvc, riftSvc)                                                  // tick effectors (CorrodeTower / AmplifyRift)
+	symbiontSvc.WithRoster(rosterSvc)                                                           // command screen + assign/recall
+	symbiontSvc.WithOnboarding(playerSvc)                                                       // symbiont tutorial: relax verb gate + advance step on action
 	rosterWorker := roster.NewWorker(rosterSvc)
+
+	// Wild spirits (N2): the world threat + the Symbiont's tameable army.
+	// towerRepo (OwnerOf/SetSpiritPressure) satisfies BeaconOps; the rest go
+	// through thin adapters. Symbiont-gated for weaken/tame; spirit brownout
+	// recomputes the owner's dome (T-864 cascade).
+	spiritRepo := spirit.NewPgRepository(db)
+	spiritSvc := spirit.NewService(spiritRepo).
+		WithBeacons(towerRepo, &spiritResourceAdapter{res: resourceSvc}, networkSvc).
+		WithEvents(realtimeHub).
+		WithProfile(&spiritProfileAdapter{repo: playerRepo}).
+		WithExhauster(playerRepo).
+		WithRoster(&spiritRosterAdapter{svc: rosterSvc}).
+		WithFactionGate(&nestFactionGate{svc: factionSvc}).
+		WithSurge(realtimeHub). // T-880: broadcast surge start/recovery to all players (OFF until triggered)
+		WithItems(itemSvc)      // T-881: Ionized Charge repellent spends hack_key
+	spiritHandler := spirit.NewHandler(spiritSvc)
+	spiritWorker := spirit.NewWorker(spiritSvc)
+	// N2 (T-865): on every validated move, check for a spirit touch in the field.
+	playerHandler.SetPositionObserver(&spiritTouchObserver{svc: spiritSvc})
 
 	// Capture
 	captureSvc := capture.NewService(towerRepo, playerRepo, cellRepo, pushSvc)
@@ -335,6 +358,7 @@ func main() {
 	mux.HandleFunc(infection.TypeTideAdvance, infectionWorker.HandleTideAdvance)
 	mux.HandleFunc(hive.TypePulse, hiveWorker.HandlePulse)
 	mux.HandleFunc(nest.TypeTick, nestWorker.HandleTick)
+	mux.HandleFunc(spirit.TypeTick, spiritWorker.HandleTick)
 	mux.HandleFunc(factionwar.TypeSettle, factionWarWorker.HandleSettle)
 	mux.HandleFunc(spire.TypeLifecycle, spireWorker.HandleLifecycle)
 	mux.HandleFunc(station.TypeLifecycle, stationWorker.HandleLifecycle)
@@ -401,6 +425,12 @@ func main() {
 	// is future-proofing for the pocket-refresh pass (T-843).
 	if _, err := asynqScheduler.Register("4-59/5 * * * *", nest.NewTickTask()); err != nil {
 		slog.Error("asynq scheduler register nest:tick failed", "error", err)
+		os.Exit(1)
+	}
+	// N2: wild-spirit lifecycle every 5m at a :02 offset — jittered off infection
+	// (:00) and nest (:04) so the cell/network-touching workers never collide (40P01).
+	if _, err := asynqScheduler.Register("2-59/5 * * * *", spirit.NewTickTask()); err != nil {
+		slog.Error("asynq scheduler register spirit:tick failed", "error", err)
 		os.Exit(1)
 	}
 	// E2: settle finished faction-war seasons daily (rewards + reset is implicit).
@@ -534,6 +564,11 @@ func main() {
 			// Nest (N3): the Symbiont home.
 			r.Get("/nest", nestHandler.Get)
 			r.Get("/nests/nearby", nestHandler.Nearby)
+			// Wild spirits (N2/N4): map visibility + weaken/tame.
+			r.Get("/spirits/nearby", spiritHandler.Nearby)
+			r.Post("/spirits/repel", spiritHandler.Repel) // T-881: Ionized Charge repellent (hack_key sink)
+			r.Post("/spirits/{id}/weaken", spiritHandler.Weaken)
+			r.Post("/spirits/{id}/tame", spiritHandler.Tame)
 			r.Post("/nest", nestHandler.Create)
 			r.Post("/nest/relocate", nestHandler.Relocate)
 			r.Post("/nest/feed", nestHandler.Feed)
@@ -612,6 +647,47 @@ func main() {
 	slog.Info("server stopped")
 }
 
+// spiritTouchObserver runs the field-touch check after a validated move (N2).
+type spiritTouchObserver struct{ svc *spirit.Service }
+
+func (o *spiritTouchObserver) OnPlayerMoved(ctx context.Context, playerID string, lat, lng float64) {
+	if _, err := o.svc.TouchCheck(ctx, playerID, lat, lng); err != nil {
+		slog.Error("spirit touch check failed", "player_id", playerID, "error", err)
+	}
+}
+
+// spiritResourceAdapter debits the wave-drain from a beacon owner (best-effort:
+// an insufficient balance just means no drain this wave).
+type spiritResourceAdapter struct{ res *player.ResourceService }
+
+func (a *spiritResourceAdapter) SpendEnergy(ctx context.Context, playerID string, energy int) error {
+	_, err := a.res.Spend(ctx, playerID, energy, 0)
+	return err
+}
+
+// spiritProfileAdapter exposes a player's level + Resonance Level to the spirit
+// service (novice-inertness + tame class gate).
+type spiritProfileAdapter struct{ repo *player.PgRepository }
+
+func (a *spiritProfileAdapter) LevelAndResonanceLevel(ctx context.Context, playerID string) (int, int, error) {
+	p, err := a.repo.GetByID(ctx, playerID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if p == nil {
+		return 0, 1, nil
+	}
+	return p.Level, canon.ResonanceLevelForXP(p.SymbiontResonance), nil
+}
+
+// spiritRosterAdapter adds a tamed spirit to the roster as an entity.
+type spiritRosterAdapter struct{ svc *roster.Service }
+
+func (a *spiritRosterAdapter) GrantEntity(ctx context.Context, playerID, archetype string) error {
+	_, err := a.svc.GrantEntity(ctx, playerID, archetype)
+	return err
+}
+
 // nestFactionGate adapts faction.Service to nest.FactionGate (ADR-N3-11): a
 // player may own a nest only as a committed Symbiont (faction=symbiont AND
 // chosen — not a temporary onboarding symbiont).
@@ -642,6 +718,28 @@ func (a *nestDefenderReader) DefenderPoints(ctx context.Context, playerID string
 		return 0, nil
 	}
 	return p.Skills.Defender, nil
+}
+
+// nestGarrisonReader adapts the roster entity repo to nest.GarrisonReader (T-873):
+// tamed spirits kept HOME (idle/available, not dispatched to raid) defend the
+// nest, lengthening its siege window. Counting only idle entities is what makes
+// this a real choice — sending the swarm out to attack drops the home garrison.
+type nestGarrisonReader struct {
+	repo *roster.PgEntityRepository
+}
+
+func (a *nestGarrisonReader) HomeGarrison(ctx context.Context, playerID string) (int, error) {
+	list, err := a.repo.ListByPlayer(ctx, playerID)
+	if err != nil {
+		return 0, err
+	}
+	home := 0
+	for i := range list {
+		if list[i].Status == canon.EntityAvailable {
+			home++
+		}
+	}
+	return home, nil
 }
 
 // towerReaderAdapter adapts tower.Repository to cell.TowerReader,

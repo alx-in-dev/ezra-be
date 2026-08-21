@@ -24,6 +24,7 @@ type Repository interface {
 	NearestCellID(ctx context.Context, lat, lng float64) (string, error)
 	InsertDomedByDisks(ctx context.Context, playerID string, lngs, lats, radii []float64) (int, error)
 	InsertDomedByPolygons(ctx context.Context, playerID string, rings [][]LatLng) (int, error)
+	SpiritPressuredIDs(ctx context.Context, playerID string) ([]string, error)
 }
 
 // PgRepository is the PostgreSQL/PostGIS implementation.
@@ -255,4 +256,27 @@ func (r *PgRepository) NearestCellID(ctx context.Context, lat, lng float64) (str
 		return "", fmt.Errorf("nearest cell: %w", err)
 	}
 	return id, nil
+}
+
+// SpiritPressuredIDs returns the player's tower ids currently under N2 spirit
+// pressure (spirit_pressure_until > now()) — recompute drops these from the dome
+// so infection creeps in around a spirit-pressured perimeter beacon (T-864).
+func (r *PgRepository) SpiritPressuredIDs(ctx context.Context, playerID string) ([]string, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT id::text FROM towers
+		 WHERE owner_id = $1 AND spirit_pressure_until IS NOT NULL AND spirit_pressure_until > now()`,
+		playerID)
+	if err != nil {
+		return nil, fmt.Errorf("spirit-pressured ids: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

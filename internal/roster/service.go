@@ -41,6 +41,12 @@ type ResonanceReader interface {
 	ResonanceProgressOf(ctx context.Context, id string) (pool, level, xp int, err error)
 }
 
+// CommanderReader reads a player's Commander skill points — each point raises the
+// tamed-spirit control cap (T-846). Optional; nil → no Commander bonus (RL alone).
+type CommanderReader interface {
+	CommanderPoints(ctx context.Context, id string) (int, error)
+}
+
 // Service computes and seeds the Resonance Pool and manages the entity roster
 // (R4-2 L2). Implements faction.RosterInitializer so it runs on the side-choice.
 type Service struct {
@@ -50,6 +56,7 @@ type Service struct {
 	pool      PoolStore
 	entities  EntityRepository
 	resonance ResonanceReader
+	commander CommanderReader
 	// effectors for the autonomous tick (L2b); nil-safe.
 	corroder  TowerCorroder
 	amplifier RiftAmplifier
@@ -67,6 +74,10 @@ func (s *Service) WithEntities(entities EntityRepository, resonance ResonanceRea
 	s.resonance = resonance
 	return s
 }
+
+// WithCommanderCap wires the Commander-skill control-cap bonus (T-846, fluent,
+// optional). Without it the cap is Resonance-Level only.
+func (s *Service) WithCommanderCap(r CommanderReader) *Service { s.commander = r; return s }
 
 var _ faction.RosterInitializer = (*Service)(nil)
 

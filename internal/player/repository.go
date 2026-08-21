@@ -53,6 +53,16 @@ func (r *PgRepository) GetByID(ctx context.Context, id string) (*Player, error) 
 	return r.getOne(ctx, "SELECT id, firebase_uid, login, password_hash, username, username_is_custom, onboarding_step, starter_beacon_available, level, xp, energy, materials, army_limit, crystals, storage_bonus_energy, pet_slots, symbiont_resonance, skills, position, last_active, created_at FROM players WHERE id = $1", id)
 }
 
+// CommanderPoints returns the player's Commander skill points (roster.CommanderReader,
+// T-846). Reads the skills JSON directly to avoid loading the full row.
+func (r *PgRepository) CommanderPoints(ctx context.Context, id string) (int, error) {
+	p, err := r.GetByID(ctx, id)
+	if err != nil || p == nil {
+		return 0, err
+	}
+	return p.Skills.Commander, nil
+}
+
 func (r *PgRepository) GetAll(ctx context.Context) ([]Player, error) {
 	rows, err := r.db.Query(ctx, "SELECT id, firebase_uid, login, password_hash, username, username_is_custom, onboarding_step, starter_beacon_available, level, xp, energy, materials, army_limit, crystals, storage_bonus_energy, pet_slots, symbiont_resonance, skills, position, last_active, created_at FROM players")
 	if err != nil {
@@ -330,4 +340,14 @@ func (r *PgRepository) SpendCrystals(ctx context.Context, id string, amount int)
 		return false, fmt.Errorf("spend crystals: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// SetExhaustion sets the player's N2 "Истощение" debuff window (spirit touch).
+func (r *PgRepository) SetExhaustion(ctx context.Context, id string, until time.Time) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE players SET exhausted_until = $2 WHERE id = $1`, id, until)
+	if err != nil {
+		return fmt.Errorf("set exhaustion: %w", err)
+	}
+	return nil
 }

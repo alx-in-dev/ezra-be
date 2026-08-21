@@ -11,6 +11,9 @@ import (
 // Repository persists player inventory items.
 type Repository interface {
 	Add(ctx context.Context, playerID, itemType, variant string, delta int) (int, error)
+	// Consume atomically deducts qty of a fungible item (empty variant), only if
+	// the stack holds enough. Returns true on success, false if short.
+	Consume(ctx context.Context, playerID, itemType string, qty int) (bool, error)
 	ListByPlayer(ctx context.Context, playerID string) ([]Item, error)
 }
 
@@ -38,6 +41,20 @@ func (r *PgRepository) Add(ctx context.Context, playerID, itemType, variant stri
 		return 0, fmt.Errorf("add item: %w", err)
 	}
 	return qty, nil
+}
+
+// Consume atomically deducts qty of a fungible item (empty variant) only if the
+// player has at least qty — the WHERE qty >= $3 guard makes the check-and-deduct
+// a single race-free statement. Returns false (no rows updated) when short.
+func (r *PgRepository) Consume(ctx context.Context, playerID, itemType string, qty int) (bool, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE player_items SET qty = qty - $3, updated_at = now()
+		WHERE player_id = $1 AND item_type = $2 AND variant = '' AND qty >= $3`,
+		playerID, itemType, qty)
+	if err != nil {
+		return false, fmt.Errorf("consume item: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // ListByPlayer returns all non-empty item stacks for a player.

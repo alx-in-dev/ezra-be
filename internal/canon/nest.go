@@ -105,6 +105,19 @@ const (
 	// trickle by this fraction (T-845). Placeholder.
 	NestEnergistTricklePerPoint = 0.05
 
+	// NestGarrisonWindowPerSpirit: each tamed spirit kept HOME (idle/available,
+	// not sent out to attack) lengthens the nest siege window by this fraction
+	// (T-873). This is the N4 spirit-garrison — the payoff of taming and the
+	// strategic tension of "hold the swarm home vs. send it to raid". Deliberately
+	// below NestDefenderWindowPerPoint per spirit so it stacks meaningfully but a
+	// garrison is a soft buffer, not an unbreakable wall (venue-safety / П2).
+	NestGarrisonWindowPerSpirit = 0.06
+
+	// NestGarrisonCap: max tamed spirits that count toward the garrison bonus.
+	// Caps the modifier so a large roster can't make a nest effectively immortal
+	// (Executable-Loss corridor). Above this, extra spirits are better off raiding.
+	NestGarrisonCap = 5
+
 	// NestPocketHoldSeconds: how far ahead nest:tick pushes pierced_until for a
 	// nest's pocket cells (T-843, ADR-N3-8). ~2× the 5-min tick so a live nest
 	// always holds its pocket open; when it dies the refresh stops and the cell

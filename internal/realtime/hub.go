@@ -75,6 +75,24 @@ func (h *Hub) PublishEvent(playerID, eventType string, data map[string]any) {
 	h.Publish(playerID, Event{Type: eventType, Data: data})
 }
 
+// BroadcastEvent delivers an event to EVERY subscriber — used for world events
+// that affect all players at once, like the spirit surge (T-880). Non-blocking
+// per channel like Publish (a full buffer drops the frame; the next tick/poll
+// recovers state).
+func (h *Hub) BroadcastEvent(eventType string, data map[string]any) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	ev := Event{Type: eventType, Data: data}
+	for _, set := range h.subs {
+		for ch := range set {
+			select {
+			case ch <- ev:
+			default:
+			}
+		}
+	}
+}
+
 // HasSubscribers reports whether anyone is currently listening for playerID.
 func (h *Hub) HasSubscribers(playerID string) bool {
 	h.mu.RLock()

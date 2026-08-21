@@ -1,6 +1,7 @@
 package player
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,7 +16,19 @@ import (
 
 type Handler struct {
 	service *Service
+	// posObserver is an optional hook run after a validated position update
+	// (N2: the spirit service checks for a field touch). Kept an interface so
+	// player stays decoupled from spirit.
+	posObserver PositionObserver
 }
+
+// PositionObserver is notified of a player's validated new position.
+type PositionObserver interface {
+	OnPlayerMoved(ctx context.Context, playerID string, lat, lng float64)
+}
+
+// SetPositionObserver wires the optional post-move hook (fluent-free setter).
+func (h *Handler) SetPositionObserver(o PositionObserver) { h.posObserver = o }
 
 // maxSpeedKmh is the anti-cheat movement speed limit (W-03). Overridable via
 // MAX_SPEED_KMH so dev environments can teleport with FakeGPS without every
@@ -212,6 +225,12 @@ func (h *Handler) UpdatePosition(w http.ResponseWriter, r *http.Request) {
 		"player_id", playerID,
 		"lat", req.Lat, "lng", req.Lng,
 		"moved_m", geo.Haversine(p.Position.Lat, p.Position.Lng, req.Lat, req.Lng))
+
+	// N2: let the spirit service check for a field touch at the new position
+	// (novice-inert players are ignored inside the observer).
+	if h.posObserver != nil {
+		h.posObserver.OnPlayerMoved(r.Context(), playerID, req.Lat, req.Lng)
+	}
 
 	httputil.JSON(w, http.StatusOK, map[string]any{
 		"position": map[string]any{"lat": req.Lat, "lng": req.Lng, "updated_at": time.Now()},

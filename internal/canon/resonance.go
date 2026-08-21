@@ -39,6 +39,21 @@ func ResonanceControlCap(level int) int {
 	return resonanceControlCap[level]
 }
 
+// CommanderControlBonusPerPoint: each Commander skill point raises the tamed-
+// spirit control cap by this many slots (T-846 — the human skill tree's Commander
+// branch, dead until N4, now grows the swarm the Symbiont can field at once).
+const CommanderControlBonusPerPoint = 1
+
+// SpiritControlCap is the effective entity control-slot cap: the Resonance-Level
+// base plus the Commander-skill bonus (T-846). Commander is what finally makes a
+// large tamed roster deployable at once, rather than RL alone.
+func SpiritControlCap(level, commanderPoints int) int {
+	if commanderPoints < 0 {
+		commanderPoints = 0
+	}
+	return ResonanceControlCap(level) + CommanderControlBonusPerPoint*commanderPoints
+}
+
 // ResonanceXPForNextLevel returns the cumulative XP needed for the next level, or
 // -1 if already at max (for client "X/Y to RLn" readouts).
 func ResonanceXPForNextLevel(level int) int {
