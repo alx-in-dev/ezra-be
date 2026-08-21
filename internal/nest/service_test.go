@@ -257,3 +257,19 @@ func TestOpenFirstNest_AllowedForSymbiont(t *testing.T) {
 		t.Fatalf("a committed Symbiont should open a nest: %v", err)
 	}
 }
+
+func TestRepairAlly_RejectsNonSymbiont(t *testing.T) {
+	repo := &fakeRepo{live: &Nest{ID: "n1", OwnerID: "ally", Level: 1, SiegeState: SiegeUnderSiege}}
+	svc := NewService(repo, fakeCells{}, nil, nil).WithFactionGate(fakeGate{allow: false})
+	if _, err := svc.RepairAlly(context.Background(), "human", "n1"); err == nil {
+		t.Fatal("a non-Symbiont must not repair an ally nest")
+	}
+}
+
+func TestRepairAlly_AllowsSymbiont(t *testing.T) {
+	repo := &fakeRepo{live: &Nest{ID: "n1", OwnerID: "ally", Level: 1, SiegeState: SiegeUnderSiege, SiegeHP: 10}}
+	svc := NewService(repo, fakeCells{}, nil, nil).WithFactionGate(fakeGate{allow: true})
+	if _, err := svc.RepairAlly(context.Background(), "symb", "n1"); err != nil {
+		t.Fatalf("a Symbiont should repair an ally nest: %v", err)
+	}
+}

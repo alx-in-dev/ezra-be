@@ -440,6 +440,16 @@ func (s *Service) OnAssaultVictory(ctx context.Context, nestID, attackerID strin
 	return nil
 }
 
+// RepairAlly lets any Symbiont pour into a FELLOW Symbiont's nest (coop defense,
+// T-840). The actor must be a committed Symbiont; the target nest is repaired
+// regardless of owner. Prevents humans from "repairing" (griefing/probing) nests.
+func (s *Service) RepairAlly(ctx context.Context, actorID, nestID string) (*Nest, error) {
+	if err := s.requireSymbiont(ctx, actorID); err != nil {
+		return nil, err
+	}
+	return s.Repair(ctx, nestID)
+}
+
 // Repair restores a nest's siege HP and cancels a pending collapse (ADR-N3-4
 // invariant 3, hive.Empower semantics). Allowed to allied Symbionts too — the
 // coop defense (T-840): anyone of the faction near the nest can pour in.
