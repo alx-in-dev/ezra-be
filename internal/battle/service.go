@@ -12,6 +12,7 @@ import (
 	"github.com/ezra-game/server/internal/factionwar"
 	"github.com/ezra-game/server/internal/hive"
 	"github.com/ezra-game/server/internal/item"
+	"github.com/ezra-game/server/internal/nest"
 	"github.com/ezra-game/server/internal/player"
 	"github.com/ezra-game/server/internal/rift"
 	"github.com/ezra-game/server/internal/unit"
@@ -110,6 +111,13 @@ type BlueprintRoller interface {
 
 // HiveProvider lets a squad assault a Symbiont hive (E1 deepening). Optional
 // dependency (set via SetHiveProvider); nil in unit tests.
+type NestProvider interface {
+	GetByID(ctx context.Context, id string) (*nest.Nest, error)
+	// OnAssaultVictory grinds the nest's siege (never closes it — collapse is a
+	// tick's job, ADR-N3-4/10).
+	OnAssaultVictory(ctx context.Context, nestID, attackerID string) error
+}
+
 type HiveProvider interface {
 	GetByID(ctx context.Context, id string) (*hive.Hive, error)
 	OnAssaultVictory(ctx context.Context, hiveID string) (closed bool, err error)
@@ -169,6 +177,7 @@ type Service struct {
 	inventory   ItemGranter
 	discoverer  Discoverer
 	hives       HiveProvider
+	nests       NestProvider
 	faction     FactionScorer
 	contacter   FactionContacter
 	riftLimiter RiftDailyLimiter
@@ -199,6 +208,9 @@ func (s *Service) SetRiftLimiter(l RiftDailyLimiter) { s.riftLimiter = l }
 
 // SetHiveProvider wires the optional hive-assault dependency (E1 deepening).
 func (s *Service) SetHiveProvider(h HiveProvider) { s.hives = h }
+
+// SetNestProvider wires the optional nest-assault dependency (N3, ADR-N3-10).
+func (s *Service) SetNestProvider(n NestProvider) { s.nests = n }
 
 // SetFactionScorer wires the optional faction-war scorer (E2 slice).
 func (s *Service) SetFactionScorer(f FactionScorer) { s.faction = f }
@@ -341,6 +353,27 @@ func (s *Service) Start(ctx context.Context, playerID, squadID, targetType, targ
 		if _, err := s.hives.GetByID(ctx, targetID); err != nil {
 			return nil, httputil.NewNotFound("not_found", "hive not found")
 		}
+	case "nest":
+		// N3 (ADR-N3-10): humans assault a Symbiont home nest. Symbionts can't
+		// reach this path at all — battle entry is faction-gated to Humans
+		// (T-800), so no separate PvP guard is needed. Like a hive, demand a
+		// full squad. The assault grinds the nest's siege; the nest never
+		// collapses in one blow (that's the tick's job).
+		if s.nests == nil {
+			return nil, httputil.NewBadRequest("feature_locked", "nest assault is unavailable")
+		}
+		fighterCount := 0
+		for _, u := range units {
+			if u.Type == "fighter" {
+				fighterCount++
+			}
+		}
+		if fighterCount < canon.NestAssaultMinFighters {
+			return nil, httputil.NewBadRequest("insufficient_fighters", "штурм гнезда требует минимум 5 бойцов")
+		}
+		if _, err := s.nests.GetByID(ctx, targetID); err != nil {
+			return nil, httputil.NewNotFound("not_found", "nest not found")
+		}
 	case "tutorial":
 		if len(units) < 2 {
 			return nil, httputil.NewBadRequest("insufficient_units", "tutorial battle requires at least 2 units")
@@ -356,7 +389,7 @@ func (s *Service) Start(ctx context.Context, playerID, squadID, targetType, targ
 			return nil, httputil.NewBadRequest("feature_locked", "tutorial battle is not available right now")
 		}
 	default:
-		return nil, httputil.NewBadRequest("invalid_target", "target_type must be 'rift', 'hive' or 'tutorial'")
+		return nil, httputil.NewBadRequest("invalid_target", "target_type must be 'rift', 'hive', 'nest' or 'tutorial'")
 	}
 
 	b := &Battle{
@@ -406,6 +439,9 @@ const HiveAssaultEnergyCost = 150
 func (s *Service) encounterEnergyCost(ctx context.Context, targetType, targetID string) int {
 	if targetType == "hive" {
 		return HiveAssaultEnergyCost
+	}
+	if targetType == "nest" {
+		return canon.NestAssaultEnergyCost
 	}
 	if targetType != "rift" {
 		return 0
@@ -463,6 +499,15 @@ func (s *Service) loadEncounter(ctx context.Context, b *Battle) ([]Spirit, strin
 			return nil, "", nil, fmt.Errorf("get hive: %w", err)
 		}
 		return hiveDefenders(h.Level), "hive", hiveLoot(h.Level), nil
+	case "nest":
+		n, err := s.nests.GetByID(ctx, b.TargetID)
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("get nest: %w", err)
+		}
+		// N3 (ADR-N3-5): the garrison is the hive template today; N4 layers
+		// tamed spirit-defenders in via the DefenseModifier seam without
+		// touching this path.
+		return hiveDefenders(n.Level), "nest", hiveLoot(n.Level), nil
 	default:
 		return nil, "", nil, httputil.NewBadRequest("invalid_target", "unsupported battle target")
 	}
@@ -1098,6 +1143,18 @@ func (s *Service) onBattleResolved(ctx context.Context, b *Battle, loot map[stri
 			loot["epic"] = weakened
 			b.EpicLoot = weakened
 		}
+	}
+	// N3 (ADR-N3-4/10): a won assault grinds the nest's siege and arms/advances
+	// its collapse timer + telegraph — but NEVER closes it here. The terminal
+	// collapse (and any faction reward for it) is applied by nest:tick, so the
+	// owner always gets the guaranteed reaction window.
+	if s.nests != nil && b.TargetType == "nest" {
+		if err := s.nests.OnAssaultVictory(ctx, b.TargetID, b.AttackerID); err != nil {
+			slog.Error("nest assault resolution failed", "battle_id", b.ID, "nest_id", b.TargetID, "error", err)
+		}
+		sieged := map[string]any{"nest_sieged": true}
+		loot["epic"] = sieged
+		b.EpicLoot = sieged
 	}
 	if b.TargetType == "tutorial" {
 		if _, err := s.completeTutorialBattle(ctx, b.AttackerID); err != nil {

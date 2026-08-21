@@ -155,6 +155,16 @@ const (
 	auraHiveRadiusL2 = 350.0
 	auraHiveRadiusL3 = 500.0
 	auraRiftRadiusM  = 200.0
+
+	// Nest aura radii by level (N3, T-832). A live Nest projects Symbiont
+	// territory just like a hive/rift. Local literals to avoid a canon/nest
+	// import edge (same pattern as the hive radii) — keep in sync with
+	// canon.NestConfig / nest.LevelConfig / infection's nestRadiusL*.
+	auraNestRadiusL1 = 200.0
+	auraNestRadiusL2 = 275.0
+	auraNestRadiusL3 = 350.0
+	auraNestRadiusL4 = 425.0
+	auraNestRadiusL5 = 500.0
 )
 
 func (r *PgRepository) RegionBalance(ctx context.Context, lat, lng, radiusM float64) (RegionBalance, error) {
@@ -181,6 +191,14 @@ func (r *PgRepository) RegionBalance(ctx context.Context, lat, lng, radiusM floa
 				) OR EXISTS (
 					SELECT 1 FROM rifts rf JOIN cells rc ON rc.id = rf.cell_id
 					WHERE rf.closed_at IS NULL AND ST_DWithin(c.geom::geography, rc.geom::geography, $7::float8)
+				) OR EXISTS (
+					-- T-832: a live Nest extends Symbiont aura (boolean OR — no double
+					-- count with hives/rifts/pierced, ADR-N3-2).
+					SELECT 1 FROM nests n WHERE n.collapsed_at IS NULL
+					  AND ST_DWithin(c.geom::geography, n.geom::geography,
+							CASE n.level WHEN 1 THEN $8::float8 WHEN 2 THEN $9::float8
+										 WHEN 3 THEN $10::float8 WHEN 4 THEN $11::float8
+										 ELSE $12::float8 END)
 				)) AS aura
 			FROM cells c, pt
 			WHERE ST_DWithin(c.geom::geography, pt.g, $3)
@@ -197,7 +215,8 @@ func (r *PgRepository) RegionBalance(ctx context.Context, lat, lng, radiusM floa
 			(SELECT count(*) FROM rifts rf JOIN cells rc ON rc.id = rf.cell_id, pt
 				WHERE rf.closed_at IS NULL AND ST_DWithin(rc.geom::geography, pt.g, $3))
 		FROM region`,
-		lat, lng, radiusM, auraHiveRadiusL1, auraHiveRadiusL2, auraHiveRadiusL3, auraRiftRadiusM).
+		lat, lng, radiusM, auraHiveRadiusL1, auraHiveRadiusL2, auraHiveRadiusL3, auraRiftRadiusM,
+		auraNestRadiusL1, auraNestRadiusL2, auraNestRadiusL3, auraNestRadiusL4, auraNestRadiusL5).
 		Scan(&b.DomedCells, &b.CleanCells, &b.InfectedCells, &b.AuraCells, &b.PiercedCells,
 			&b.HumanRaw, &b.SymbiontRaw, &b.OpenHives, &b.OpenRifts)
 	if err != nil {

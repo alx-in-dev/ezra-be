@@ -66,6 +66,18 @@ func (r *PgRepository) BatchRecalculate(ctx context.Context) (int64, error) {
 			FROM rifts r
 			JOIN cells rc ON rc.id = r.cell_id
 			WHERE r.closed_at IS NULL
+			UNION ALL
+			-- T-831 (ADR-N3-2): a live Nest is a source too. Its aura radius grows
+			-- with level (canon.NestConfig, mirrored as $17..$21 to avoid an import
+			-- edge). Gates ambient/neighbor growth in its radius, exactly like a hive.
+			SELECT (n.geom::geography) AS geog,
+				   CASE n.level WHEN 1 THEN $17::float8
+								WHEN 2 THEN $18::float8
+								WHEN 3 THEN $19::float8
+								WHEN 4 THEN $20::float8
+								ELSE $21::float8 END AS radius_m
+			FROM nests n
+			WHERE n.collapsed_at IS NULL
 		)
 		UPDATE cells AS c SET
 			infection = CASE
@@ -173,6 +185,11 @@ func (r *PgRepository) BatchRecalculate(ctx context.Context) (int64, error) {
 		hiveRadiusL2,
 		hiveRadiusL3,
 		maxTowerSearchM,
+		nestRadiusL1, // $17
+		nestRadiusL2, // $18
+		nestRadiusL3, // $19
+		nestRadiusL4, // $20
+		nestRadiusL5, // $21
 	)
 	if err != nil {
 		return 0, fmt.Errorf("batch recalculate infection: %w", err)

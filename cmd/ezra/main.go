@@ -26,6 +26,7 @@ import (
 	"github.com/ezra-game/server/internal/infection"
 	"github.com/ezra-game/server/internal/item"
 	"github.com/ezra-game/server/internal/legacy"
+	"github.com/ezra-game/server/internal/nest"
 	"github.com/ezra-game/server/internal/network"
 	"github.com/ezra-game/server/internal/pet"
 	"github.com/ezra-game/server/internal/platform"
@@ -171,6 +172,15 @@ func main() {
 	hiveHandler := hive.NewHandler(hiveSvc)
 	hiveWorker := hive.NewWorker(hiveSvc)
 
+	// Nest (N3): the Symbiont home. playerRepo satisfies both crystalSpender
+	// (relocate/rebuild) and ResonanceGranter (collect buffer→profile).
+	nestRepo := nest.NewPgRepository(db)
+	nestSvc := nest.NewService(nestRepo, cellRepo, playerRepo, playerRepo).
+		WithEvents(realtimeHub) // R4-6: live "nest under attack" + ETA to the owner
+	nestSvc.AddDefenseModifier(nest.NewSkillDefenderModifier(&nestDefenderReader{playerRepo})) // T-844: Defender skill hardens the nest
+	nestHandler := nest.NewHandler(nestSvc)
+	nestWorker := nest.NewWorker(nestSvc)
+
 	// Units
 	unitRepo := unit.NewPgRepository(db)
 	unitSvc := unit.NewService(unitRepo, playerRepo)
@@ -256,6 +266,7 @@ func main() {
 	battleSvc.SetUnitProgressor(unitSvc)                      // D3: surviving units earn battle XP and level up
 	battleSvc.SetItemGranter(itemSvc)                         // D5: critical-rift shard bosses drop resonance signatures
 	battleSvc.SetHiveProvider(hiveSvc)                        // E1: squads can assault and collapse hives
+	battleSvc.SetNestProvider(nestSvc)                        // N3: squads can siege a Symbiont home nest (never one-shot)
 	battleSvc.SetFactionScorer(factionWarSvc)                 // E2: victories score Human faction-war points
 	battleSvc.SetFactionContacter(factionSvc)                 // E3: hive collapse = Contact (unlocks side choice)
 	battleSvc.SetDiscoverer(bestiarySvc)                      // T-660: engaging logs spirit/rift types to the bestiary
@@ -318,6 +329,7 @@ func main() {
 	mux.HandleFunc(infection.TypeRecalculate, infectionWorker.HandleRecalculate)
 	mux.HandleFunc(infection.TypeTideAdvance, infectionWorker.HandleTideAdvance)
 	mux.HandleFunc(hive.TypePulse, hiveWorker.HandlePulse)
+	mux.HandleFunc(nest.TypeTick, nestWorker.HandleTick)
 	mux.HandleFunc(factionwar.TypeSettle, factionWarWorker.HandleSettle)
 	mux.HandleFunc(spire.TypeLifecycle, spireWorker.HandleLifecycle)
 	mux.HandleFunc(station.TypeLifecycle, stationWorker.HandleLifecycle)
@@ -375,6 +387,15 @@ func main() {
 	// E1: the Symbiont hive lifecycle (pulse infection, seed rifts, grow) hourly.
 	if _, err := asynqScheduler.Register("23 * * * *", hive.NewPulseTask()); err != nil {
 		slog.Error("asynq scheduler register hive:pulse failed", "error", err)
+		os.Exit(1)
+	}
+	// N3: nest lifecycle (trickle + support decay). Every 5m at a :04 offset so
+	// it never fires in lock-step with infection:recalculate (@every 5m at :00)
+	// — jitter guards against the 40P01 deadlock from overlapping cell-touching
+	// workers (N0 gotcha). Trickle/decay touch only `nests` today, but the offset
+	// is future-proofing for the pocket-refresh pass (T-843).
+	if _, err := asynqScheduler.Register("4-59/5 * * * *", nest.NewTickTask()); err != nil {
+		slog.Error("asynq scheduler register nest:tick failed", "error", err)
 		os.Exit(1)
 	}
 	// E2: settle finished faction-war seasons daily (rewards + reset is implicit).
@@ -505,6 +526,14 @@ func main() {
 			r.Get("/items", itemHandler.List)
 			r.Get("/hives", hiveHandler.List)
 			r.Post("/hives/{id}/empower", hiveHandler.Empower)
+			// Nest (N3): the Symbiont home.
+			r.Get("/nest", nestHandler.Get)
+			r.Get("/nests/nearby", nestHandler.Nearby)
+			r.Post("/nest", nestHandler.Create)
+			r.Post("/nest/relocate", nestHandler.Relocate)
+			r.Post("/nest/feed", nestHandler.Feed)
+			r.Post("/nest/collect", nestHandler.Collect)
+			r.Post("/nest/repair", nestHandler.Repair)
 			r.Get("/faction-war", factionWarHandler.Status)
 			r.Post("/faction-war/settle", factionWarHandler.Settle)
 			r.Get("/faction", factionHandler.Status)
@@ -576,6 +605,23 @@ func main() {
 		slog.Error("shutdown error", "error", err)
 	}
 	slog.Info("server stopped")
+}
+
+// nestDefenderReader adapts the player repo to nest.DefenderReader (T-844):
+// the owner's Defender skill hardens their nest's siege window.
+type nestDefenderReader struct {
+	repo *player.PgRepository
+}
+
+func (a *nestDefenderReader) DefenderPoints(ctx context.Context, playerID string) (int, error) {
+	p, err := a.repo.GetByID(ctx, playerID)
+	if err != nil {
+		return 0, err
+	}
+	if p == nil {
+		return 0, nil
+	}
+	return p.Skills.Defender, nil
 }
 
 // towerReaderAdapter adapts tower.Repository to cell.TowerReader,

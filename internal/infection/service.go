@@ -33,6 +33,17 @@ const (
 	hiveRadiusL2 = 350.0
 	hiveRadiusL3 = 500.0
 
+	// Nest aura radii by level (N3, T-831), mirrored from canon.NestConfig
+	// (canon/nest.go) to avoid a canon→infection import edge, same pattern as
+	// the hive radii above. Keep in sync with nest.LevelConfig / canon.NestConfig
+	// and the factionwar aura literals. A live Nest is an infection source just
+	// like a hive or open rift — it gates ambient/neighbor growth in its radius.
+	nestRadiusL1 = 200.0
+	nestRadiusL2 = 275.0
+	nestRadiusL3 = 350.0
+	nestRadiusL4 = 425.0
+	nestRadiusL5 = 500.0
+
 	// D2 antagonist tide (directed infection advance toward player beacons).
 	tideStepPerTick       = 6.0   // infection points added to an advancing cell per tick
 	tideAdvanceCeiling    = 90.0  // only push cells below this (criticals still form via rifts)

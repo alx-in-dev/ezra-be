@@ -217,7 +217,12 @@ func (r *PgRepository) CountOpenSourcesInRadius(ctx context.Context, lat, lng, r
 		SELECT
 			(SELECT count(*) FROM hives h, pt WHERE h.closed_at IS NULL AND ST_DWithin(h.geom::geography, pt.g, $3))
 			+ (SELECT count(*) FROM rifts rf JOIN cells rc ON rc.id = rf.cell_id, pt
-				WHERE rf.closed_at IS NULL AND ST_DWithin(rc.geom::geography, pt.g, $3))`,
+				WHERE rf.closed_at IS NULL AND ST_DWithin(rc.geom::geography, pt.g, $3))
+			-- T-832 (ADR-N3-3): live Nests count in the source-budget denominator
+			-- (they slow ambient hive/rift seeding in a dense region). Player-
+			-- initiated nest create/relocate is exempt from the budget elsewhere.
+			+ (SELECT count(*) FROM nests nst, pt
+				WHERE nst.collapsed_at IS NULL AND ST_DWithin(nst.geom::geography, pt.g, $3))`,
 		lat, lng, radiusM).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count open sources in radius: %w", err)
