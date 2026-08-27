@@ -39,6 +39,25 @@ type Service struct {
 	// faction gates construction to Humans and hostility checks to cross-
 	// faction targets (T-800/T-801). nil-safe: without it, gates are skipped.
 	faction FactionChecker
+	// quickStart finishes onboarding for a quick-start Human right after their
+	// first beacon (docs/feature/onboarding_quick_start.md). nil-safe, but a
+	// quick-start-flagged player would stall on first_tower_step without it.
+	quickStart QuickStartFinisher
+}
+
+// QuickStartFinisher grants the rest of the onboarding quick-start Human
+// chain (2nd survivor, tutorial-battle rewards, starter pet) and completes
+// onboarding, right after place() plants their first (and only manual)
+// beacon. See docs/feature/onboarding_quick_start.md.
+type QuickStartFinisher interface {
+	FinishHumanSetup(ctx context.Context, playerID string) error
+}
+
+// WithQuickStart wires the optional onboarding quick-start finisher (fluent,
+// optional). Kept off the constructor so existing callers/tests stay unchanged.
+func (s *Service) WithQuickStart(f QuickStartFinisher) *Service {
+	s.quickStart = f
+	return s
 }
 
 // FactionChecker reports a player's faction for the human-toolkit exclusion
@@ -382,14 +401,38 @@ func (s *Service) place(ctx context.Context, p *player.Player, lat, lng float64,
 	}
 	if isStarterBeacon || p.OnboardingStep == canon.OnboardingFirstTowerStep {
 		p.StarterBeaconAvailable = false
-		p.OnboardingStep = canon.OnboardingSurvivorStep
-		if err := s.players.Update(ctx, p); err != nil {
-			slog.Error("tower place failed: update onboarding after placement",
-				"player_id", playerID,
-				"cell_id", cellID,
-				"tower_id", t.ID,
-				"error", err)
-			return nil, fmt.Errorf("update onboarding after tower placement: %w", err)
+		if p.QuickStartHuman {
+			// Onboarding quick-start (docs/feature/onboarding_quick_start.md): this
+			// beacon was the only manual step left. Persist StarterBeaconAvailable
+			// first, then hand off to the finisher, which grants the rest of the
+			// chain and completes onboarding — it does its own player fetch/update,
+			// so onboarding_step is deliberately left untouched here.
+			if err := s.players.Update(ctx, p); err != nil {
+				slog.Error("tower place failed: update onboarding after placement",
+					"player_id", playerID,
+					"cell_id", cellID,
+					"tower_id", t.ID,
+					"error", err)
+				return nil, fmt.Errorf("update onboarding after tower placement: %w", err)
+			}
+			if s.quickStart == nil {
+				slog.Error("tower place: quick-start human flagged but no finisher wired",
+					"player_id", playerID, "cell_id", cellID, "tower_id", t.ID)
+			} else if err := s.quickStart.FinishHumanSetup(ctx, playerID); err != nil {
+				slog.Error("tower place failed: quick-start human setup",
+					"player_id", playerID, "cell_id", cellID, "tower_id", t.ID, "error", err)
+				return nil, fmt.Errorf("quick-start human setup: %w", err)
+			}
+		} else {
+			p.OnboardingStep = canon.OnboardingSurvivorStep
+			if err := s.players.Update(ctx, p); err != nil {
+				slog.Error("tower place failed: update onboarding after placement",
+					"player_id", playerID,
+					"cell_id", cellID,
+					"tower_id", t.ID,
+					"error", err)
+				return nil, fmt.Errorf("update onboarding after tower placement: %w", err)
+			}
 		}
 	}
 	if s.quests != nil {

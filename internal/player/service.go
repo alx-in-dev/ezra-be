@@ -163,6 +163,58 @@ func (s *Service) FinishFactionChoice(ctx context.Context, playerID string) erro
 	return s.repo.Update(ctx, p)
 }
 
+// RequireQuickStartEligible fetches the player and rejects the onboarding
+// quick-start (docs/feature/onboarding_quick_start.md) once they've moved past
+// the very first gate — quick-start only makes sense before any narrative or
+// mechanical progress exists, and re-running it later would let a player
+// re-grant themselves starter resources/units.
+func (s *Service) RequireQuickStartEligible(ctx context.Context, playerID string) (*Player, error) {
+	p, err := s.repo.GetByID(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+	if p.OnboardingStep != canon.OnboardingNotStarted && p.OnboardingStep != canon.OnboardingLoreStep {
+		return nil, httputil.NewBadRequest("already_started", "онбординг уже продвинулся дальше — быстрый старт недоступен")
+	}
+	return p, nil
+}
+
+// StartHumanQuickStart flags the player for the quick-start Human path and
+// advances them straight to placing their first beacon — the one manual,
+// GPS-bound action the path keeps. tower.Service grants the rest (2nd
+// survivor, tutorial-battle rewards, starter pet) once they place it, via the
+// QuickStartFinisher it's wired with. See docs/feature/onboarding_quick_start.md.
+func (s *Service) StartHumanQuickStart(ctx context.Context, playerID string) (*Player, error) {
+	p, err := s.RequireQuickStartEligible(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+	p.OnboardingStep = canon.OnboardingFirstTowerStep
+	if err := s.repo.Update(ctx, p); err != nil {
+		return nil, err
+	}
+	if err := s.repo.SetQuickStartHuman(ctx, playerID); err != nil {
+		return nil, err
+	}
+	p.QuickStartHuman = true
+	return p, nil
+}
+
+// ForceCompleteOnboarding sets onboarding to completed unconditionally —
+// unlike FinishFactionChoice, it doesn't require the player to be on
+// faction_choice_step. Used only by the onboarding quick-start orchestration
+// (internal/quickstart), which reaches `completed` by a different route for
+// each side (Human: after their first beacon; Symbiont: instantly).
+func (s *Service) ForceCompleteOnboarding(ctx context.Context, playerID string) error {
+	p, err := s.repo.GetByID(ctx, playerID)
+	if err != nil {
+		return err
+	}
+	p.OnboardingStep = canon.OnboardingCompleted
+	p.StarterBeaconAvailable = false
+	return s.repo.Update(ctx, p)
+}
+
 // AddXP adds experience and handles level ups.
 // XP formula: XP_for_next_level(n) = 100 * n^1.6
 func (s *Service) AddXP(ctx context.Context, playerID string, amount int) (*Player, error) {

@@ -24,6 +24,10 @@ type Repository interface {
 	Update(ctx context.Context, p *Player) error
 	UpdatePosition(ctx context.Context, id string, lat, lng float64) error
 	UpdateLastActive(ctx context.Context, id string) error
+	// SetQuickStartHuman flags a player for the onboarding quick-start Human
+	// path (docs/feature/onboarding_quick_start.md). Dedicated column, outside
+	// Update's generic SET list — same pattern as crystals/resonance.
+	SetQuickStartHuman(ctx context.Context, id string) error
 }
 
 type PgRepository struct {
@@ -50,7 +54,7 @@ func (r *PgRepository) Create(ctx context.Context, p *Player) error {
 }
 
 func (r *PgRepository) GetByID(ctx context.Context, id string) (*Player, error) {
-	return r.getOne(ctx, "SELECT id, firebase_uid, login, password_hash, username, username_is_custom, onboarding_step, starter_beacon_available, level, xp, energy, materials, army_limit, crystals, storage_bonus_energy, pet_slots, symbiont_resonance, skills, position, last_active, created_at FROM players WHERE id = $1", id)
+	return r.getOne(ctx, "SELECT id, firebase_uid, login, password_hash, username, username_is_custom, onboarding_step, starter_beacon_available, level, xp, energy, materials, army_limit, crystals, storage_bonus_energy, pet_slots, symbiont_resonance, quick_start_human, skills, position, last_active, created_at FROM players WHERE id = $1", id)
 }
 
 // CommanderPoints returns the player's Commander skill points (roster.CommanderReader,
@@ -64,7 +68,7 @@ func (r *PgRepository) CommanderPoints(ctx context.Context, id string) (int, err
 }
 
 func (r *PgRepository) GetAll(ctx context.Context) ([]Player, error) {
-	rows, err := r.db.Query(ctx, "SELECT id, firebase_uid, login, password_hash, username, username_is_custom, onboarding_step, starter_beacon_available, level, xp, energy, materials, army_limit, crystals, storage_bonus_energy, pet_slots, symbiont_resonance, skills, position, last_active, created_at FROM players")
+	rows, err := r.db.Query(ctx, "SELECT id, firebase_uid, login, password_hash, username, username_is_custom, onboarding_step, starter_beacon_available, level, xp, energy, materials, army_limit, crystals, storage_bonus_energy, pet_slots, symbiont_resonance, quick_start_human, skills, position, last_active, created_at FROM players")
 	if err != nil {
 		return nil, fmt.Errorf("list players: %w", err)
 	}
@@ -77,7 +81,7 @@ func (r *PgRepository) GetAll(ctx context.Context) ([]Player, error) {
 		var firebaseUID, login, passwordHash *string
 		if err := rows.Scan(
 			&p.ID, &firebaseUID, &login, &passwordHash, &p.Username, &p.UsernameIsCustom, &p.OnboardingStep, &p.StarterBeaconAvailable,
-			&p.Level, &p.XP, &p.Energy, &p.Materials, &p.ArmyLimit, &p.Crystals, &p.StorageBonusEnergy, &p.PetSlots, &p.SymbiontResonance, &skillsJSON, &posJSON, &p.LastActive, &p.CreatedAt,
+			&p.Level, &p.XP, &p.Energy, &p.Materials, &p.ArmyLimit, &p.Crystals, &p.StorageBonusEnergy, &p.PetSlots, &p.SymbiontResonance, &p.QuickStartHuman, &skillsJSON, &posJSON, &p.LastActive, &p.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan player: %w", err)
 		}
@@ -98,11 +102,11 @@ func (r *PgRepository) GetAll(ctx context.Context) ([]Player, error) {
 }
 
 func (r *PgRepository) GetByFirebaseUID(ctx context.Context, uid string) (*Player, error) {
-	return r.getOne(ctx, "SELECT id, firebase_uid, login, password_hash, username, username_is_custom, onboarding_step, starter_beacon_available, level, xp, energy, materials, army_limit, crystals, storage_bonus_energy, pet_slots, symbiont_resonance, skills, position, last_active, created_at FROM players WHERE firebase_uid = $1", uid)
+	return r.getOne(ctx, "SELECT id, firebase_uid, login, password_hash, username, username_is_custom, onboarding_step, starter_beacon_available, level, xp, energy, materials, army_limit, crystals, storage_bonus_energy, pet_slots, symbiont_resonance, quick_start_human, skills, position, last_active, created_at FROM players WHERE firebase_uid = $1", uid)
 }
 
 func (r *PgRepository) GetByLogin(ctx context.Context, login string) (*Player, error) {
-	return r.getOne(ctx, "SELECT id, firebase_uid, login, password_hash, username, username_is_custom, onboarding_step, starter_beacon_available, level, xp, energy, materials, army_limit, crystals, storage_bonus_energy, pet_slots, symbiont_resonance, skills, position, last_active, created_at FROM players WHERE login = $1", login)
+	return r.getOne(ctx, "SELECT id, firebase_uid, login, password_hash, username, username_is_custom, onboarding_step, starter_beacon_available, level, xp, energy, materials, army_limit, crystals, storage_bonus_energy, pet_slots, symbiont_resonance, quick_start_human, skills, position, last_active, created_at FROM players WHERE login = $1", login)
 }
 
 func (r *PgRepository) CreateWithLogin(ctx context.Context, p *Player) error {
@@ -129,7 +133,7 @@ func (r *PgRepository) getOne(ctx context.Context, query string, args ...any) (*
 	err := r.db.QueryRow(ctx, query, args...).Scan(
 		&p.ID, &firebaseUID, &login, &passwordHash, &p.Username, &p.UsernameIsCustom, &p.OnboardingStep, &p.StarterBeaconAvailable,
 		&p.Level, &p.XP, &p.Energy, &p.Materials, &p.ArmyLimit, &p.Crystals, &p.StorageBonusEnergy, &p.PetSlots,
-		&p.SymbiontResonance,
+		&p.SymbiontResonance, &p.QuickStartHuman,
 		&skillsJSON, &posJSON,
 		&p.LastActive, &p.CreatedAt,
 	)
@@ -348,6 +352,16 @@ func (r *PgRepository) SetExhaustion(ctx context.Context, id string, until time.
 		`UPDATE players SET exhausted_until = $2 WHERE id = $1`, id, until)
 	if err != nil {
 		return fmt.Errorf("set exhaustion: %w", err)
+	}
+	return nil
+}
+
+// SetQuickStartHuman flags a player for the onboarding quick-start Human path
+// (docs/feature/onboarding_quick_start.md).
+func (r *PgRepository) SetQuickStartHuman(ctx context.Context, id string) error {
+	_, err := r.db.Exec(ctx, `UPDATE players SET quick_start_human = true WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("set quick start human: %w", err)
 	}
 	return nil
 }

@@ -150,6 +150,9 @@ func (m *mockPlayerRepo) UpdatePosition(ctx context.Context, id string, lat, lng
 func (m *mockPlayerRepo) UpdateLastActive(ctx context.Context, id string) error {
 	return m.Called(ctx, id).Error(0)
 }
+func (m *mockPlayerRepo) SetQuickStartHuman(ctx context.Context, id string) error {
+	return m.Called(ctx, id).Error(0)
+}
 
 type mockQuestProgressor struct{ mock.Mock }
 
@@ -270,6 +273,48 @@ func TestPlace_UsesStarterBeaconWithoutResourceSpend(t *testing.T) {
 	assert.NotNil(t, tower)
 	assert.False(t, p.StarterBeaconAvailable)
 	assert.Equal(t, canon.OnboardingSurvivorStep, p.OnboardingStep)
+}
+
+// fakeQuickStartFinisher records whether the onboarding quick-start Human
+// finisher was invoked (docs/feature/onboarding_quick_start.md).
+type fakeQuickStartFinisher struct {
+	calledFor string
+	err       error
+}
+
+func (f *fakeQuickStartFinisher) FinishHumanSetup(ctx context.Context, playerID string) error {
+	f.calledFor = playerID
+	return f.err
+}
+
+func TestPlace_QuickStartHuman_HandsOffToFinisherInsteadOfSurvivorStep(t *testing.T) {
+	svc, towerRepo, cellRepo, playerRepo, _, _ := setupService()
+	finisher := &fakeQuickStartFinisher{}
+	svc.WithQuickStart(finisher)
+	ctx := context.Background()
+	p := defaultPlayer()
+	p.OnboardingStep = canon.OnboardingFirstTowerStep
+	p.StarterBeaconAvailable = true
+	p.QuickStartHuman = true
+	c := defaultCell()
+
+	playerRepo.On("GetByID", ctx, "player-1").Return(p, nil)
+	cellRepo.On("GetByID", ctx, "cell-1").Return(c, nil)
+	towerRepo.On("CountAllInRadius", ctx, c.Lat, c.Lng, canon.NetworkMinSpacingM).Return(0, nil)
+	towerRepo.On("CountAllInRadius", ctx, c.Lat, c.Lng, canon.TowerOverloadRadiusM).Return(1, nil)
+	towerRepo.On("Create", ctx, mock.AnythingOfType("*tower.Tower")).Return(nil)
+	cellRepo.On("SetTowerID", ctx, "cell-1", mock.AnythingOfType("*string")).Return(nil)
+	playerRepo.On("Update", ctx, mock.AnythingOfType("*player.Player")).Return(nil)
+
+	tower, err := svc.Place(ctx, "player-1", "cell-1")
+
+	assert.NoError(t, err)
+	assert.NotNil(t, tower)
+	assert.False(t, p.StarterBeaconAvailable)
+	// Quick-start never writes survivor_step itself — it hands off to the
+	// finisher, which reaches `completed` by a different route.
+	assert.Equal(t, canon.OnboardingFirstTowerStep, p.OnboardingStep)
+	assert.Equal(t, "player-1", finisher.calledFor)
 }
 
 func TestPlace_TooFar(t *testing.T) {

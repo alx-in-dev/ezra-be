@@ -99,6 +99,9 @@ func (m *mockPlayerRepo) UpdatePosition(ctx context.Context, id string, lat, lng
 func (m *mockPlayerRepo) UpdateLastActive(ctx context.Context, id string) error {
 	return m.Called(ctx, id).Error(0)
 }
+func (m *mockPlayerRepo) SetQuickStartHuman(ctx context.Context, id string) error {
+	return m.Called(ctx, id).Error(0)
+}
 
 func TestSpawnForPlayer_GuaranteesSurvivorsDuringOnboarding(t *testing.T) {
 	svc := NewService(&mockUnitRepo{}, &mockPlayerRepo{})

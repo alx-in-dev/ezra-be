@@ -35,6 +35,7 @@ import (
 	"github.com/ezra-game/server/internal/push"
 	"github.com/ezra-game/server/internal/pvp"
 	"github.com/ezra-game/server/internal/quest"
+	"github.com/ezra-game/server/internal/quickstart"
 	"github.com/ezra-game/server/internal/realtime"
 	"github.com/ezra-game/server/internal/resonance"
 	"github.com/ezra-game/server/internal/rift"
@@ -340,6 +341,13 @@ func main() {
 		WithFaction(factionSvc) // T-800: Symbionts don't recruit an army
 	survivorHandler := survivor.NewHandler(survivorSvc)
 
+	// Onboarding quick-start (docs/feature/onboarding_quick_start.md): "choose a
+	// side immediately" instead of the full narrative chain. Wired last among its
+	// dependents (units/pets/faction/nest/resources) so all of them already exist.
+	quickStartSvc := quickstart.NewService(unitRepo, petRepo, resourceSvc, playerSvc, factionSvc, nestSvc)
+	towerSvc.WithQuickStart(quickStartSvc) // finishes a quick-start Human right after their first beacon
+	quickStartHandler := quickstart.NewHandler(quickStartSvc, factionSvc, playerSvc)
+
 	// Shop (T-540: register catalog/buy/crystals/subscription routes)
 	shopRepo := shop.NewPgRepository(db)
 	shopSvc := shop.NewService(shopRepo, playerRepo, unitRepo, petRepo)
@@ -517,6 +525,7 @@ func main() {
 			r.Get("/profile", playerHandler.GetProfile)
 			r.Get("/onboarding", playerHandler.GetOnboarding)
 			r.Post("/onboarding/advance", playerHandler.AdvanceOnboarding)
+			r.Post("/onboarding/quick-start", quickStartHandler.Start)
 			r.Patch("/profile/username", playerHandler.UpdateUsername)
 			r.Get("/skills", playerHandler.GetSkills)
 			r.Post("/skills/{id}/unlock", playerHandler.UnlockSkill)

@@ -11,6 +11,11 @@ type Player struct {
 	UsernameIsCustom       bool        `json:"username_is_custom" db:"username_is_custom"`
 	OnboardingStep         string      `json:"onboarding_step" db:"onboarding_step"`
 	StarterBeaconAvailable bool        `json:"starter_beacon_available" db:"starter_beacon_available"`
+	// QuickStartHuman marks a player who skipped the onboarding narrative
+	// (docs/feature/onboarding_quick_start.md): they still place their first
+	// beacon manually, but tower.Service grants the rest of the human chain
+	// (2nd survivor, tutorial-battle rewards, starter pet) instantly once they do.
+	QuickStartHuman bool `json:"-" db:"quick_start_human"`
 	Level                  int         `json:"level" db:"level"`
 	XP                     int         `json:"xp" db:"xp"`
 	Energy                 int         `json:"energy" db:"energy"`

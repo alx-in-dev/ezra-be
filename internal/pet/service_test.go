@@ -188,6 +188,9 @@ func (m *mockPlayerRepo) UpdatePosition(ctx context.Context, id string, lat, lng
 func (m *mockPlayerRepo) UpdateLastActive(ctx context.Context, id string) error {
 	return m.Called(ctx, id).Error(0)
 }
+func (m *mockPlayerRepo) SetQuickStartHuman(ctx context.Context, id string) error {
+	return m.Called(ctx, id).Error(0)
+}
 
 func newService(repo *MockRepository, towers *mockTowerRepo, cells *mockCellRepo, players *mockPlayerRepo) *Service {
 	return NewService(repo, towers, cells, players, nil, nil, nil)

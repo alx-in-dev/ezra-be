@@ -90,6 +90,9 @@ func (m *mockPlayerRepo) UpdatePosition(ctx context.Context, id string, lat, lng
 func (m *mockPlayerRepo) UpdateLastActive(ctx context.Context, id string) error {
 	return m.Called(ctx, id).Error(0)
 }
+func (m *mockPlayerRepo) SetQuickStartHuman(ctx context.Context, id string) error {
+	return m.Called(ctx, id).Error(0)
+}
 
 func TestListByPlayer_ReturnsDecaySummary(t *testing.T) {
 	unitsRepo := &mockUnitRepo{}

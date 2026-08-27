@@ -157,6 +157,22 @@ func (s *Service) Choose(ctx context.Context, playerID, side string) (*State, er
 	return s.Status(ctx, playerID)
 }
 
+// ChooseInstant commits a fresh player to the Symbiont side immediately,
+// bypassing the Contact precondition and switch cooldown Choose enforces.
+// Used only by the onboarding quick-start path
+// (docs/feature/onboarding_quick_start.md), which runs before any Contact or
+// faction state exists — never call this once a player has an established
+// faction; use Choose for every other case.
+func (s *Service) ChooseInstant(ctx context.Context, playerID string) (*State, error) {
+	if err := s.repo.Choose(ctx, playerID, Symbiont); err != nil {
+		return nil, err
+	}
+	if s.roster != nil {
+		_ = s.roster.OnFactionChosen(ctx, playerID, Symbiont)
+	}
+	return s.Status(ctx, playerID)
+}
+
 // FactionOf returns the player's current side (for the faction war).
 func (s *Service) FactionOf(ctx context.Context, playerID string) (string, error) {
 	fac, _, _, err := s.repo.Get(ctx, playerID)

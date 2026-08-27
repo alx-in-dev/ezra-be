@@ -115,6 +115,11 @@ func (m *MockPlayerRepository) UpdateLastActive(ctx context.Context, id string) 
 	return args.Error(0)
 }
 
+func (m *MockPlayerRepository) SetQuickStartHuman(ctx context.Context, id string) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
 // --- Tests ---
 
 func TestGenerate3Daily_NewDay(t *testing.T) {

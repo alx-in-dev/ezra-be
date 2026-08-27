@@ -75,6 +75,11 @@ func (m *MockRepository) UpdateLastActive(ctx context.Context, id string) error 
 	return args.Error(0)
 }
 
+func (m *MockRepository) SetQuickStartHuman(ctx context.Context, id string) error {
+	args := m.Called(ctx, id)
+	return args.Error(0)
+}
+
 // --- ResourceService Tests ---
 
 func TestSpend_Success(t *testing.T) {
@@ -395,4 +400,74 @@ func TestFinishFactionChoice_CompletesOnlyFromChoiceStep(t *testing.T) {
 	repo2.On("GetByID", ctx, "p2").Return(p2, nil)
 	assert.NoError(t, svc2.FinishFactionChoice(ctx, "p2"))
 	repo2.AssertNotCalled(t, "Update", mock.Anything, mock.Anything)
+}
+
+func TestRequireQuickStartEligible(t *testing.T) {
+	ctx := context.Background()
+
+	for _, step := range []string{canon.OnboardingNotStarted, canon.OnboardingLoreStep} {
+		repo := new(MockRepository)
+		svc := NewService(repo)
+		p := &Player{ID: "p1", OnboardingStep: step}
+		repo.On("GetByID", ctx, "p1").Return(p, nil)
+		got, err := svc.RequireQuickStartEligible(ctx, "p1")
+		assert.NoError(t, err)
+		assert.Same(t, p, got)
+	}
+
+	// Past the first gate → rejected.
+	repo := new(MockRepository)
+	svc := NewService(repo)
+	p := &Player{ID: "p1", OnboardingStep: canon.OnboardingFirstTowerStep}
+	repo.On("GetByID", ctx, "p1").Return(p, nil)
+	_, err := svc.RequireQuickStartEligible(ctx, "p1")
+	assert.Error(t, err)
+	appErr, ok := err.(*httputil.AppError)
+	assert.True(t, ok)
+	assert.Equal(t, "already_started", appErr.Code)
+}
+
+func TestStartHumanQuickStart(t *testing.T) {
+	ctx := context.Background()
+	repo := new(MockRepository)
+	svc := NewService(repo)
+	p := &Player{ID: "p1", OnboardingStep: canon.OnboardingLoreStep}
+	repo.On("GetByID", ctx, "p1").Return(p, nil)
+	repo.On("Update", ctx, mock.MatchedBy(func(pp *Player) bool {
+		return pp.OnboardingStep == canon.OnboardingFirstTowerStep
+	})).Return(nil)
+	repo.On("SetQuickStartHuman", ctx, "p1").Return(nil)
+
+	got, err := svc.StartHumanQuickStart(ctx, "p1")
+	assert.NoError(t, err)
+	assert.Equal(t, canon.OnboardingFirstTowerStep, got.OnboardingStep)
+	assert.True(t, got.QuickStartHuman)
+	repo.AssertExpectations(t)
+}
+
+func TestStartHumanQuickStart_RejectsPastFirstGate(t *testing.T) {
+	ctx := context.Background()
+	repo := new(MockRepository)
+	svc := NewService(repo)
+	p := &Player{ID: "p1", OnboardingStep: canon.OnboardingSurvivorStep}
+	repo.On("GetByID", ctx, "p1").Return(p, nil)
+
+	_, err := svc.StartHumanQuickStart(ctx, "p1")
+	assert.Error(t, err)
+	repo.AssertNotCalled(t, "Update", mock.Anything, mock.Anything)
+	repo.AssertNotCalled(t, "SetQuickStartHuman", mock.Anything, mock.Anything)
+}
+
+func TestForceCompleteOnboarding(t *testing.T) {
+	ctx := context.Background()
+	repo := new(MockRepository)
+	svc := NewService(repo)
+	p := &Player{ID: "p1", OnboardingStep: canon.OnboardingLoreStep, StarterBeaconAvailable: true}
+	repo.On("GetByID", ctx, "p1").Return(p, nil)
+	repo.On("Update", ctx, mock.MatchedBy(func(pp *Player) bool {
+		return pp.OnboardingStep == canon.OnboardingCompleted && !pp.StarterBeaconAvailable
+	})).Return(nil)
+
+	assert.NoError(t, svc.ForceCompleteOnboarding(ctx, "p1"))
+	repo.AssertExpectations(t)
 }

@@ -120,3 +120,28 @@ func TestChoose_FinishesOnboarding(t *testing.T) {
 	assert.True(t, repo.chosen)
 	assert.True(t, fin.called, "onboarding finisher invoked on choice")
 }
+
+func TestChooseInstant_SkipsContactAndCooldown(t *testing.T) {
+	// No Contact, no prior faction row — ChooseInstant must not require either
+	// (docs/feature/onboarding_quick_start.md: it runs before any exists).
+	repo := &fakeRepo{}
+	svc := NewService(repo)
+
+	st, err := svc.ChooseInstant(context.Background(), "p1")
+	assert.NoError(t, err)
+	assert.Equal(t, Symbiont, repo.faction)
+	assert.True(t, repo.chosen)
+	assert.Equal(t, Symbiont, st.Faction)
+	assert.True(t, st.Chosen)
+}
+
+func TestChooseInstant_SeedsRoster(t *testing.T) {
+	repo := &fakeRepo{}
+	roster := &fakeRoster{}
+	svc := NewService(repo)
+	svc.SetRosterInitializer(roster)
+
+	_, err := svc.ChooseInstant(context.Background(), "p1")
+	assert.NoError(t, err)
+	assert.Equal(t, Symbiont, roster.seededSide)
+}

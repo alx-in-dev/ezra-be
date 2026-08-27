@@ -108,6 +108,9 @@ func (m *mockPlayerRepo) UpdatePosition(ctx context.Context, id string, lat, lng
 func (m *mockPlayerRepo) UpdateLastActive(ctx context.Context, id string) error {
 	return m.Called(ctx, id).Error(0)
 }
+func (m *mockPlayerRepo) SetQuickStartHuman(ctx context.Context, id string) error {
+	return m.Called(ctx, id).Error(0)
+}
 func (m *mockPlayerRepo) GetAll(ctx context.Context) ([]player.Player, error) {
 	args := m.Called(ctx)
 	if v := args.Get(0); v != nil {
