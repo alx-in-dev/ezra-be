@@ -344,7 +344,7 @@ func main() {
 	// Onboarding quick-start (docs/feature/onboarding_quick_start.md): "choose a
 	// side immediately" instead of the full narrative chain. Wired last among its
 	// dependents (units/pets/faction/nest/resources) so all of them already exist.
-	quickStartSvc := quickstart.NewService(unitRepo, petRepo, resourceSvc, playerSvc, factionSvc, nestSvc)
+	quickStartSvc := quickstart.NewService(unitRepo, petRepo, resourceSvc, playerSvc, factionSvc)
 	towerSvc.WithQuickStart(quickStartSvc) // finishes a quick-start Human right after their first beacon
 	quickStartHandler := quickstart.NewHandler(quickStartSvc, factionSvc, playerSvc)
 

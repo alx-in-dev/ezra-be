@@ -9,7 +9,6 @@ import (
 
 	"github.com/ezra-game/server/internal/canon"
 	"github.com/ezra-game/server/internal/faction"
-	"github.com/ezra-game/server/internal/nest"
 	"github.com/ezra-game/server/internal/pet"
 	"github.com/ezra-game/server/internal/player"
 	"github.com/ezra-game/server/internal/unit"
@@ -36,11 +35,10 @@ type Service struct {
 	resources *player.ResourceService
 	players   *player.Service
 	faction   *faction.Service
-	nest      *nest.Service
 }
 
-func NewService(units unit.Repository, pets pet.Repository, resources *player.ResourceService, players *player.Service, factionSvc *faction.Service, nestSvc *nest.Service) *Service {
-	return &Service{units: units, pets: pets, resources: resources, players: players, faction: factionSvc, nest: nestSvc}
+func NewService(units unit.Repository, pets pet.Repository, resources *player.ResourceService, players *player.Service, factionSvc *faction.Service) *Service {
+	return &Service{units: units, pets: pets, resources: resources, players: players, faction: factionSvc}
 }
 
 // StartHuman flags the player for the quick-start Human path and advances
@@ -115,22 +113,25 @@ func (s *Service) grantStarterPet(ctx context.Context, playerID string) error {
 }
 
 // FinishSymbiont instantly commits the player to the Symbiont side (no Contact
-// battle needed), completes onboarding, and opens their home Nest at their
-// current position — a born-Symbiont needs no other setup (RED LINE #5:
-// Symbionts never touch the human toolkit, so there's nothing else to grant).
-func (s *Service) FinishSymbiont(ctx context.Context, playerID string) (*nest.Nest, error) {
+// battle needed) and completes onboarding. It deliberately does NOT open the
+// home Nest itself — nest-opening (POST /nest {cell_id:"", first_only:true})
+// resolves the player's placement via a region-seeding lookup that can take
+// several seconds on a never-visited location (found in testing: a client
+// timeout mid-request cancelled the context and left faction+onboarding
+// committed with no nest, a partial-completion state). The normal
+// human→Symbiont flow (FactionPanel.Choose) already treats nest-opening as a
+// SEPARATE follow-up client call for the same reason, with a manual "Открыть
+// гнездо здесь" retry button as a safety net — the client mirrors that same
+// pattern for quick-start instead of bundling it into this one request.
+func (s *Service) FinishSymbiont(ctx context.Context, playerID string) error {
 	if _, err := s.players.RequireQuickStartEligible(ctx, playerID); err != nil {
-		return nil, err
+		return err
 	}
 	if _, err := s.faction.ChooseInstant(ctx, playerID); err != nil {
-		return nil, fmt.Errorf("choose symbiont: %w", err)
+		return fmt.Errorf("choose symbiont: %w", err)
 	}
 	if err := s.players.ForceCompleteOnboarding(ctx, playerID); err != nil {
-		return nil, fmt.Errorf("complete onboarding: %w", err)
+		return fmt.Errorf("complete onboarding: %w", err)
 	}
-	n, err := s.nest.OpenFirstNest(ctx, playerID, "")
-	if err != nil {
-		return nil, fmt.Errorf("open home nest: %w", err)
-	}
-	return n, nil
+	return nil
 }

@@ -43,8 +43,7 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 			"onboarding": player.BuildOnboardingPayload(p),
 		})
 	case faction.Symbiont:
-		n, err := h.service.FinishSymbiont(r.Context(), playerID)
-		if err != nil {
+		if err := h.service.FinishSymbiont(r.Context(), playerID); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -55,7 +54,6 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 		}
 		httputil.JSON(w, http.StatusOK, map[string]any{
 			"onboarding": player.BuildOnboardingPayload(p),
-			"nest":       n,
 		})
 	default:
 		httputil.Error(w, httputil.NewBadRequest("invalid_side", "side must be human or symbiont"))
